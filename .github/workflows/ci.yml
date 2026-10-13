@@ -8,7 +8,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: LibreOffice och fonter (samma som i Docker-imagen)
         run: |
           sudo apt-get update
@@ -16,7 +16,7 @@ jobs:
             libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
             fontconfig fonts-dejavu-core fonts-liberation fonts-liberation2 \
             fonts-crosextra-carlito fonts-crosextra-caladea
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build -t file-converter:ci .
       - name: Röktest av imagen
         run: |

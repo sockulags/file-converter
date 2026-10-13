@@ -1,4 +1,4 @@
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3.9-eclipse-temurin-26 AS build
 WORKDIR /src
 COPY pom.xml .
 RUN mvn -q -B dependency:go-offline
@@ -6,7 +6,7 @@ COPY src ./src
 # Testerna körs i CI, där LibreOffice finns installerat.
 RUN mvn -q -B -DskipTests package
 
-FROM eclipse-temurin:21-jre-noble
+FROM eclipse-temurin:25-jre-noble
 
 # --no-install-recommends håller borta extra fontpaket (bl.a. OpenType/CFF) som LibreOffice
 # annars kan välja som ersättning. Fontlistan nedan är den enda som finns i imagen.
