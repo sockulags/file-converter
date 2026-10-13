@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: LibreOffice och fonter (samma som i Docker-imagen)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
+            fontconfig fonts-dejavu-core fonts-liberation fonts-liberation2 \
+            fonts-crosextra-carlito fonts-crosextra-caladea
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: mvn -B verify
+
+  docker:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t file-converter:ci .
+      - name: Röktest av imagen
+        run: |
+          docker run -d --name fc -p 3000:3000 file-converter:ci
+          for i in $(seq 1 60); do curl -sf localhost:3000/health && break; sleep 2; done
+          curl -sf -o out.pdf -F files=@src/test/resources/fixtures/beslut.docx -F pdfa=PDF/A-1a \
+            localhost:3000/forms/libreoffice/convert -D headers.txt
+          grep -i "x-pdfa-compliant: true" headers.txt

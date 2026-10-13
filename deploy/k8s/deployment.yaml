@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-converter
+  labels:
+    app: file-converter
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: file-converter
+  template:
+    metadata:
+      labels:
+        app: file-converter
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: file-converter
+          image: file-converter:latest  # ersätt med ert registry
+          ports:
+            - containerPort: 3000
+          env:
+            # En LibreOffice-process per samtidig Office-konvertering. Höj tillsammans med minnet.
+            - name: CONVERTER_OFFICE_POOL_SIZE
+              value: "2"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1536Mi
+            limits:
+              memory: 3Gi
+          startupProbe:
+            httpGet: { path: /health, port: 3000 }
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi

@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: file-converter
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 200MB
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: 3000  # samma port som Gotenberg
+
+converter:
+  office:
+    enabled: true
+    home: ""            # tomt = hitta LibreOffice automatiskt
+    pool-size: 2        # en LibreOffice-process per samtidig Office-konvertering
+    task-timeout: 120s
+    queue-timeout: 30s
+    max-tasks-per-process: 200  # starta om processen regelbundet för att undvika minnesläckor
+  fonts:
+    dirs:
+      - /usr/share/fonts/truetype
+      - /opt/fonts
+    aliases:
+      sans-serif: Liberation Sans
+      serif: Liberation Serif
+      monospace: Liberation Mono
+      Arial: Liberation Sans
+      Helvetica: Liberation Sans
+      Times New Roman: Liberation Serif
+      Times: Liberation Serif
+      Courier New: Liberation Mono
+      Calibri: Carlito
+      Cambria: Caladea
+  pdfa:
+    strict: true
