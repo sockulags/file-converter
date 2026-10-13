@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filkonverterare – administration</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6677; --border: #dde1e8;
+    --accent: #2457c5; --accent-text: #ffffff; --ok: #1e7b45; --ok-bg: #e3f4ea; --bad: #b42318; --bad-bg: #fde8e7;
+    --warn: #8a5a00; --warn-bg: #fdf1d8; --code: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --panel: #1c2027; --text: #e6e9ef; --muted: #9aa3b2; --border: #2e343e;
+      --accent: #6c9bff; --accent-text: #0b1020; --ok: #6fd39a; --ok-bg: #173826; --bad: #ff8a80; --bad-bg: #3d1c1a;
+      --warn: #f5c56b; --warn-bg: #3a2e14; --code: #252a33;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header span { color: var(--muted); font-size: 13px; }
+  nav { display: flex; gap: 4px; padding: 0 24px; background: var(--panel); border-bottom: 1px solid var(--border); overflow-x: auto; }
+  nav button { border: 0; background: none; color: var(--muted); padding: 12px 14px; font: inherit; cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  nav button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  section[hidden] { display: none; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+  .panel h2 { font-size: 16px; margin: 0 0 4px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .drop { border: 2px dashed var(--border); border-radius: 10px; padding: 28px; text-align: center; color: var(--muted); cursor: pointer; transition: border-color .15s; }
+  .drop.over, .drop:hover { border-color: var(--accent); color: var(--text); }
+  .drop strong { color: var(--text); }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+  button.primary, a.primary { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 7px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
+  button.secondary { background: none; border: 1px solid var(--border); color: var(--text); border-radius: 7px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  select, input[type=text] { font: inherit; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.bad { background: var(--bad-bg); color: var(--bad); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+  .badge.muted { background: var(--code); color: var(--muted); }
+  .verdict { display: flex; align-items: center; gap: 12px; font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .verdict .badge { font-size: 13px; }
+  ul.violations { margin: 8px 0 0; padding-left: 20px; }
+  ul.violations li { margin-bottom: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+  iframe { width: 100%; height: 640px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 420px; }
+  .toast.show { opacity: .95; }
+  .alias-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+  .alias-row input { flex: 1; min-width: 0; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .empty { color: var(--muted); font-style: italic; }
+  @media (max-width: 600px) { main { padding: 16px; } header, nav { padding-left: 16px; padding-right: 16px; } iframe { height: 420px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Filkonverterare</h1>
+  <span>Administration av fonter och alias, och test av filer mot PDF/A</span>
+</header>
+<nav role="tablist">
+  <button role="tab" data-tab="check" aria-selected="true">Testa fil</button>
+  <button role="tab" data-tab="fonts" aria-selected="false">Fonter</button>
+  <button role="tab" data-tab="aliases" aria-selected="false">Alias</button>
+  <button role="tab" data-tab="bundle" aria-selected="false">Export och import</button>
+</nav>
+<main>
+
+<section id="check">
+  <div class="panel">
+    <h2>Testa filer</h2>
+    <p class="hint">Filerna konverteras precis som via API:t. Word, Excel, PowerPoint och ODF går via LibreOffice, PDF normaliseras, och HTML-mallar renderas tillsammans med bilder och css som släpps samtidigt. Flera dokument testas ett i taget och sammanställs i en tabell. Resultatet jämförs också visuellt med samma dokument utan PDF/A-rättningar.</p>
+    <div class="drop" id="check-drop"><strong>Släpp filer här</strong> eller klicka för att välja<br><span class="meta" id="check-files">Ingen fil vald</span></div>
+    <input type="file" id="check-input" multiple hidden>
+    <div class="row">
+      <label>Nivå
+        <select id="check-level"><option>PDF/A-1a</option><option>PDF/A-1b</option></select>
+      </label>
+      <button class="primary" id="check-run" disabled>Konvertera och kontrollera</button>
+      <span class="meta" id="check-status"></span>
+    </div>
+  </div>
+  <div id="check-batch"></div>
+  <div id="check-result"></div>
+</section>
+
+<section id="fonts" hidden>
+  <div class="panel">
+    <h2>Ladda upp fonter</h2>
+    <p class="hint">TrueType (<code>.ttf</code>). Licensen måste tillåta inbäddning, eftersom PDF/A kräver det. OpenType/CFF (<code>.otf</code>) och fontsamlingar (<code>.ttc</code>) avvisas. Fonten blir tillgänglig för både Office-dokument och HTML-mallar.</p>
+    <div class="drop" id="font-drop"><strong>Släpp .ttf-filer här</strong> eller klicka för att välja</div>
+    <input type="file" id="font-input" accept=".ttf" multiple hidden>
+    <div id="font-upload-result"></div>
+  </div>
+  <div class="panel">
+    <div class="row" style="margin-top:0; justify-content: space-between;">
+      <h2>Installerade fonter</h2>
+      <input type="text" id="font-filter" placeholder="Filtrera på namn">
+    </div>
+    <p class="hint">Systemfonter kommer med Docker-imagen. Uppladdade fonter kan tas bort här.</p>
+    <table><thead><tr><th>Familj</th><th>Stil</th><th>Vikt</th><th>Fil</th><th>Källa</th><th></th></tr></thead><tbody id="font-table"></tbody></table>
+  </div>
+</section>
+
+<section id="aliases" hidden>
+  <div class="panel">
+    <h2>Egna alias</h2>
+    <p class="hint">När ett dokument eller en mall begär fonten till vänster används fonten till höger. Använd det för fonter ni inte har licens för, t.ex. en måttkompatibel ersättare. Egna alias går före de inbyggda.</p>
+    <div id="alias-rows"></div>
+    <datalist id="families"></datalist>
+    <div class="row">
+      <button class="secondary" id="alias-add">Lägg till alias</button>
+      <button class="primary" id="alias-save">Spara</button>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Inbyggda alias</h2>
+    <p class="hint">Från tjänstens konfiguration (<code>converter.fonts.aliases</code>).</p>
+    <table><thead><tr><th>Begärd font</th><th>Används</th></tr></thead><tbody id="alias-builtin"></tbody></table>
+  </div>
+</section>
+
+<section id="bundle" hidden>
+  <div class="grid">
+    <div class="panel">
+      <h2>Exportera</h2>
+      <p class="hint">Alla uppladdade fonter och egna alias i en zip-fil. Använd den för att flytta uppsättningen mellan miljöer, t.ex. från test till produktion, eller som säkerhetskopia.</p>
+      <a class="primary" href="api/export">Ladda ner zip</a>
+    </div>
+    <div class="panel">
+      <h2>Importera</h2>
+      <p class="hint">Ersätter <strong>alla</strong> uppladdade fonter och egna alias med innehållet i zip-filen. Allt kontrolleras först, så en ogiltig fil ändrar ingenting.</p>
+      <input type="file" id="import-input" accept=".zip">
+      <div class="row"><button class="primary" id="import-run" disabled>Importera och ersätt</button></div>
+    </div>
+  </div>
+  <p class="meta">Ändringar sparas i den delade resurskatalogen. Instansen du använder laddar om direkt, och övriga instanser inom en halv minut.</p>
+</section>
+
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(path, options = {}) {
+  const headers = Object.assign({'X-Requested-With': 'admin'}, options.headers || {});
+  const response = await fetch('api/' + path, Object.assign({}, options, {headers, credentials: 'same-origin'}));
+  const type = response.headers.get('Content-Type') || '';
+  const body = type.includes('json') ? await response.json() : null;
+  if (!response.ok) throw new Error((body && (body.detail || body.message)) || ('Fel ' + response.status));
+  return body;
+}
+
+function toast(text) {
+  const el = $('toast');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+function dropZone(zone, input, onFiles) {
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => onFiles([...input.files]));
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+  zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('over'); onFiles([...e.dataTransfer.files]); });
+}
+
+// Flikar
+document.querySelectorAll('nav button').forEach(button => button.addEventListener('click', () => {
+  document.querySelectorAll('nav button').forEach(b => b.setAttribute('aria-selected', b === button));
+  document.querySelectorAll('main > section').forEach(s => s.hidden = s.id !== button.dataset.tab);
+  if (button.dataset.tab === 'fonts') loadFonts();
+  if (button.dataset.tab === 'aliases') loadAliases();
+}));
+
+// Testa fil
+let checkFiles = [];
+let previewUrl = null;
+let batch = [];
+const routes = {office: 'LibreOffice', html: 'HTML-mall', pdf: 'PDF-normalisering'};
+const isHtml = f => /\.html?$/i.test(f.name);
+// En mall testas tillsammans med sina resurser. Övriga filer testas en i taget.
+const isBatch = files => files.length > 1 && !files.some(isHtml);
+const pct = p => p.toLocaleString('sv-SE', {maximumFractionDigits: 2}) + ' %';
+
+dropZone($('check-drop'), $('check-input'), files => {
+  checkFiles = files;
+  $('check-files').textContent = !files.length ? 'Ingen fil vald'
+      : isBatch(files) ? files.length + ' filer, testas en i taget' : files.map(f => f.name).join(', ');
+  $('check-run').disabled = files.length === 0;
+});
+
+async function checkOne(files) {
+  const form = new FormData();
+  files.forEach(f => form.append('files', f, f.name));
+  form.append('pdfa', $('check-level').value);
+  return api('check', {method: 'POST', body: form});
+}
+
+$('check-run').addEventListener('click', async () => {
+  $('check-run').disabled = true;
+  try {
+    if (isBatch(checkFiles)) {
+      await runBatch();
+    } else {
+      $('check-batch').innerHTML = '';
+      $('check-status').textContent = 'Konverterar …';
+      renderCheck(await checkOne(checkFiles));
+      $('check-status').textContent = '';
+    }
+  } catch (e) {
+    $('check-status').textContent = e.message;
+  } finally {
+    $('check-run').disabled = false;
+  }
+});
+
+async function runBatch() {
+  batch = checkFiles.map(file => ({file, result: null, error: null}));
+  $('check-result').innerHTML = '';
+  renderBatch();
+  for (let i = 0; i < batch.length; i++) {
+    $('check-status').textContent = 'Testar ' + (i + 1) + ' av ' + batch.length + ' …';
+    try {
+      batch[i].result = await checkOne([batch[i].file]);
+    } catch (e) {
+      batch[i].error = e.message;
+    }
+    renderBatch();
+  }
+  const ok = batch.filter(b => b.result && b.result.compliant).length;
+  const failed = batch.filter(b => b.result && !b.result.compliant).length;
+  const errors = batch.filter(b => b.error).length;
+  $('check-status').textContent = ok + ' godkända, ' + failed + ' underkända' + (errors ? ', ' + errors + ' fel' : '') + '.';
+}
+
+function verdictBadge(r) {
+  return r.compliant ? '<span class="badge ok">Godkänd</span>'
+      : r.converted ? '<span class="badge bad">Underkänd</span>' : '<span class="badge bad">Avvisad</span>';
+}
+
+function visualBadge(v) {
+  if (!v) return '<span class="badge muted">ingen jämförelse</span>';
+  if (v.pageCountDiffers) return '<span class="badge bad">olika antal sidor</span>';
+  const level = v.differingPercent < 0.5 ? 'ok' : v.differingPercent < 3 ? 'warn' : 'bad';
+  return '<span class="badge ' + level + '">' + pct(v.differingPercent) + '</span>';
+}
+
+function missingFonts(r) {
+  return r.requestedFonts.filter(f => f.status === 'saknas').map(f => f.name);
+}
+
+function renderBatch() {
+  const rows = batch.map((b, i) => {
+    if (!b.result && !b.error) {
+      return '<tr><td>' + esc(b.file.name) + '</td><td colspan="5" class="meta">väntar …</td></tr>';
+    }
+    if (b.error) {
+      return '<tr><td>' + esc(b.file.name) + '</td><td><span class="badge bad">Fel</span></td><td colspan="4">' + esc(b.error) + '</td></tr>';
+    }
+    const r = b.result;
+    const missing = missingFonts(r);
+    return '<tr data-row="' + i + '" style="cursor:pointer" title="Visa detaljer"><td>' + esc(b.file.name) + '</td><td>' + verdictBadge(r) + '</td>'
+      + '<td>' + visualBadge(r.visual) + '</td>'
+      + '<td>' + (missing.length ? '<span class="badge warn">' + missing.length + '</span> ' + esc(missing.slice(0, 3).join(', ')) + (missing.length > 3 ? ' …' : '') : '–') + '</td>'
+      + '<td>' + esc((r.violations[0] || (r.compliant ? '' : r.message)).slice(0, 140)) + (r.violations.length > 1 ? ' <span class="meta">(+' + (r.violations.length - 1) + ')</span>' : '') + '</td>'
+      + '<td>' + r.millis + ' ms</td></tr>';
+  });
+  $('check-batch').innerHTML = '<div class="panel"><div class="row" style="margin-top:0;justify-content:space-between"><h2>Sammanställning</h2>'
+    + '<button class="secondary" id="batch-csv">Ladda ner rapport (CSV)</button></div>'
+    + '<p class="hint">Klicka på en rad för detaljer och förhandsvisning. Visuell avvikelse är andelen pixlar som skiljer mot samma dokument utan PDF/A-rättningar, på den sida som skiljer mest.</p>'
+    + '<table><thead><tr><th>Fil</th><th>Resultat</th><th>Visuell avvikelse</th><th>Saknade fonter</th><th>Problem</th><th>Tid</th></tr></thead><tbody>'
+    + rows.join('') + '</tbody></table></div>';
+  $('batch-csv').addEventListener('click', downloadCsv);
+  document.querySelectorAll('#check-batch tr[data-row]').forEach(row => row.addEventListener('click', () => {
+    renderCheck(batch[row.dataset.row].result);
+    $('check-result').scrollIntoView({behavior: 'smooth'});
+  }));
+}
+
+function downloadCsv() {
+  const cell = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const header = ['fil', 'resultat', 'niva', 'vag', 'visuell_avvikelse_procent', 'sida_med_storst_avvikelse',
+    'saknade_fonter', 'ersatta_fonter', 'problem', 'tid_ms'];
+  const lines = batch.map(b => {
+    if (b.error) return [b.file.name, 'fel', '', '', '', '', '', '', b.error, ''];
+    const r = b.result;
+    return [b.file.name, r.compliant ? 'godkand' : r.converted ? 'underkand' : 'avvisad', r.level, r.route,
+      r.visual ? r.visual.differingPercent.toFixed(2).replace('.', ',') : '', r.visual ? r.visual.worstPage : '',
+      missingFonts(r).join(', '),
+      r.requestedFonts.filter(f => f.status === 'ersätts').map(f => f.name + ' -> ' + f.replacement).join(', '),
+      r.violations.join(' | ') || (r.compliant ? '' : r.message), r.millis];
+  });
+  const csv = '﻿' + [header, ...lines].map(line => line.map(cell).join(';')).join('\r\n');
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv;charset=utf-8'}));
+  link.download = 'pdfa-rapport.csv';
+  link.click();
+}
+
+function renderCheck(r) {
+  const violations = r.violations.length
+      ? '<ul class="violations">' + r.violations.map(v => '<li>' + esc(v) + '</li>').join('') + '</ul>' : '';
+  const statusBadge = { installerad: 'ok', ersätts: 'warn', saknas: 'bad' };
+  const requested = r.requestedFonts.length
+      ? '<table><thead><tr><th>Font</th><th>Status</th></tr></thead><tbody>' + r.requestedFonts.map(f =>
+          '<tr><td>' + esc(f.name) + '</td><td><span class="badge ' + statusBadge[f.status] + '">' + esc(f.status) + '</span>'
+          + (f.replacement ? ' av ' + esc(f.replacement) : '')
+          + (f.status === 'saknas' ? ' <span class="meta">LibreOffice väljer en ersättare</span>' : '') + '</td></tr>').join('') + '</tbody></table>'
+      : '<p class="empty">Inga fontreferenser hittades.</p>';
+  const output = r.outputFonts.length
+      ? '<table><thead><tr><th>Font i PDF:en</th><th>Typ</th><th>Inbäddad</th></tr></thead><tbody>' + r.outputFonts.map(f =>
+          '<tr><td>' + esc(f.name) + '</td><td>' + esc(f.type) + '</td><td>' + (f.embedded ? '<span class="badge ok">ja</span>' : '<span class="badge bad">nej</span>') + '</td></tr>').join('') + '</tbody></table>'
+      : '<p class="empty">Inga fonter.</p>';
+  const visual = r.visual
+      ? '<p>Utseende jämfört med originalet: ' + visualBadge(r.visual)
+        + (r.visual.pageCountDiffers ? '' : ' <span class="meta">av sidan avviker på sida ' + r.visual.worstPage
+          + (r.visual.differingPercent >= 0.5 ? '. Jämför förhandsvisningen med originalet.' : '') + '</span>') + '</p>'
+      : '';
+
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  const bytes = Uint8Array.from(atob(r.pdf), c => c.charCodeAt(0));
+  previewUrl = URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}));
+
+  $('check-result').innerHTML =
+    '<div class="panel"><div class="verdict">' + verdictBadge(r) + esc(r.level) + '</div>'
+    + '<div>' + esc(r.message) + '</div>' + violations + visual
+    + '<p class="meta">' + esc(routes[r.route]) + ' · ' + r.pages + (r.pages === 1 ? ' sida · ' : ' sidor · ') + r.millis + ' ms'
+    + (r.converted ? '' : ' · förhandsvisningen visar filen före PDF/A-rättningen') + '</p></div>'
+    + '<div class="grid"><div class="panel"><h2>Fonter som dokumentet begär</h2>' + requested + '</div>'
+    + '<div class="panel"><h2>Fonter i resultatet</h2>' + output + '</div></div>'
+    + '<div class="panel"><div class="row" style="margin-top:0;justify-content:space-between"><h2>Förhandsvisning</h2>'
+    + '<a class="primary" download="resultat.pdf" href="' + previewUrl + '">Ladda ner PDF</a></div>'
+    + '<iframe title="Förhandsvisning" src="' + previewUrl + '"></iframe></div>';
+}
+
+// Fonter
+let allFonts = [];
+async function loadFonts() {
+  allFonts = await api('fonts');
+  renderFonts();
+  $('families').innerHTML = [...new Set(allFonts.map(f => f.family))].sort().map(f => '<option value="' + esc(f) + '">').join('');
+}
+
+function renderFonts() {
+  const filter = $('font-filter').value.toLowerCase();
+  const rows = allFonts
+    .filter(f => !filter || f.family.toLowerCase().includes(filter) || f.file.toLowerCase().includes(filter))
+    .sort((a, b) => a.family.localeCompare(b.family, 'sv') || a.weight - b.weight)
+    .map(f => '<tr><td>' + esc(f.family) + '</td><td>' + esc(f.style) + '</td><td>' + f.weight + '</td><td><code>' + esc(f.file) + '</code></td>'
+      + '<td>' + (f.uploaded ? '<span class="badge ok">Uppladdad</span>' : '<span class="badge muted">System</span>') + '</td>'
+      + '<td>' + (f.uploaded ? '<button class="secondary" data-delete="' + esc(f.file) + '">Ta bort</button>' : '') + '</td></tr>');
+  $('font-table').innerHTML = rows.join('') || '<tr><td colspan="6" class="empty">Inga fonter matchar.</td></tr>';
+}
+
+$('font-filter').addEventListener('input', renderFonts);
+$('font-table').addEventListener('click', async e => {
+  const file = e.target.dataset.delete;
+  if (!file || !confirm('Ta bort ' + file + '?')) return;
+  e.target.disabled = true;
+  try {
+    await api('fonts/' + encodeURIComponent(file), {method: 'DELETE'});
+    toast(file + ' borttagen. LibreOffice har startats om.');
+    loadFonts();
+  } catch (err) { toast(err.message); e.target.disabled = false; }
+});
+
+dropZone($('font-drop'), $('font-input'), async files => {
+  if (!files.length) return;
+  const form = new FormData();
+  files.forEach(f => form.append('files', f, f.name));
+  $('font-upload-result').innerHTML = '<p class="meta">Laddar upp och startar om LibreOffice …</p>';
+  try {
+    const results = await api('fonts', {method: 'POST', body: form});
+    $('font-upload-result').innerHTML = '<table style="margin-top:14px"><tbody>' + results.map(r =>
+      '<tr><td><code>' + esc(r.file) + '</code></td><td>' + (r.ok
+        ? '<span class="badge ok">Installerad</span> ' + esc(r.family) + ' ' + esc(r.style)
+        : '<span class="badge bad">Avvisad</span> ' + esc(r.message))
+      + r.warnings.map(w => '<br><span class="badge warn">Varning</span> ' + esc(w)).join('') + '</td></tr>').join('') + '</tbody></table>';
+    $('font-input').value = '';
+    loadFonts();
+  } catch (e) { $('font-upload-result').innerHTML = '<p class="badge bad">' + esc(e.message) + '</p>'; }
+});
+
+// Alias
+function aliasRow(from = '', to = '') {
+  const row = document.createElement('div');
+  row.className = 'alias-row';
+  row.innerHTML = '<input type="text" placeholder="Begärd font, t.ex. Garamond" value="' + esc(from) + '">'
+    + '<span>→</span><input type="text" list="families" placeholder="Installerad font" value="' + esc(to) + '">'
+    + '<button class="secondary" title="Ta bort">✕</button>';
+  row.querySelector('button').addEventListener('click', () => row.remove());
+  $('alias-rows').appendChild(row);
+}
+
+async function loadAliases() {
+  if (!allFonts.length) await loadFonts();
+  const data = await api('aliases');
+  $('alias-rows').innerHTML = '';
+  Object.entries(data.custom).forEach(([from, to]) => aliasRow(from, to));
+  if (!Object.keys(data.custom).length) aliasRow();
+  const custom = new Set(Object.keys(data.custom).map(k => k.toLowerCase()));
+  $('alias-builtin').innerHTML = Object.entries(data.effective)
+    .filter(([from]) => !custom.has(from.toLowerCase()))
+    .map(([from, to]) => '<tr><td>' + esc(from) + '</td><td>' + esc(to) + '</td></tr>').join('');
+}
+
+$('alias-add').addEventListener('click', () => aliasRow());
+$('alias-save').addEventListener('click', async () => {
+  const aliases = {};
+  document.querySelectorAll('.alias-row').forEach(row => {
+    const [from, to] = row.querySelectorAll('input');
+    if (from.value.trim() && to.value.trim()) aliases[from.value.trim()] = to.value.trim();
+  });
+  const unknown = Object.values(aliases).filter(to => !allFonts.some(f => f.family.toLowerCase() === to.toLowerCase()));
+  if (unknown.length && !confirm('Fonterna ' + unknown.join(', ') + ' är inte installerade. Spara ändå?')) return;
+  try {
+    await api('aliases', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(aliases)});
+    toast('Alias sparade.');
+    loadAliases();
+  } catch (e) { toast(e.message); }
+});
+
+// Export och import
+$('import-input').addEventListener('change', () => $('import-run').disabled = !$('import-input').files.length);
+$('import-run').addEventListener('click', async () => {
+  if (!confirm('Alla uppladdade fonter och egna alias ersätts. Fortsätta?')) return;
+  const form = new FormData();
+  form.append('file', $('import-input').files[0]);
+  $('import-run').disabled = true;
+  try {
+    const result = await api('import', {method: 'POST', body: form});
+    toast('Importerade ' + result.fonts + ' fonter och ' + result.aliases + ' alias.');
+  } catch (e) { toast(e.message); }
+  finally { $('import-run').disabled = false; }
+});
+</script>
+</body>
+</html>
