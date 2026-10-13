@@ -160,6 +160,31 @@ public final class TestPdfs {
         });
     }
 
+    /** Ett ifyllt formulärfält, för att testa plattning (Gotenbergs flatten). */
+    public static byte[] withFormField() {
+        return build(doc -> {
+            org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm form = new org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm(doc);
+            doc.getDocumentCatalog().setAcroForm(form);
+            PDType0Font font = PDType0Font.load(doc, new java.io.FileInputStream(FONT), false);
+            org.apache.pdfbox.pdmodel.PDResources resources = new org.apache.pdfbox.pdmodel.PDResources();
+            org.apache.pdfbox.cos.COSName fontName = resources.add(font);
+            form.setDefaultResources(resources);
+            form.setDefaultAppearance("/" + fontName.getName() + " 12 Tf 0 g");
+            org.apache.pdfbox.pdmodel.interactive.form.PDTextField field = new org.apache.pdfbox.pdmodel.interactive.form.PDTextField(form);
+            field.setPartialName("namn");
+            form.getFields().add(field);
+            org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget widget = field.getWidgets().get(0);
+            widget.setRectangle(new PDRectangle(72, 700, 200, 20));
+            widget.setPage(doc.getPage(0));
+            widget.setPrinted(true);
+            doc.getPage(0).getAnnotations().add(widget);
+            field.setValue("Anna Andersson");
+            try (PDPageContentStream cs = new PDPageContentStream(doc, doc.getPage(0))) {
+                text(cs, font, "Ansökan");
+            }
+        });
+    }
+
     /** En synlig länk och en dold textanteckning (t.ex. en granskningskommentar). */
     public static byte[] withHiddenAnnotation() {
         return build(doc -> {

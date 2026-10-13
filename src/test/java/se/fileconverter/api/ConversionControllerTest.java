@@ -266,6 +266,162 @@ class ConversionControllerTest {
                 .andExpect(jsonPath("$.violations[0]").value(org.hamcrest.Matchers.startsWith("2-kundfil.pdf")));
     }
 
+    // --- Gotenberg-kompatibilitet ---
+
+    @Test
+    void libreofficeLandscapeTurnsAllPages() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx"))
+                        .param("landscape", "true").param("pdfa", "PDF/A-1a"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        assertThat(orientations(pdf)).containsOnly("liggande");
+    }
+
+    @Test
+    void libreofficeNativePageRangesKeepsTaggedPdfa1a() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("staende-liggande.docx"))
+                        .param("nativePageRanges", "2").param("pdfa", "PDF/A-1a"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        assertThat(orientations(pdf)).containsExactly("liggande");
+    }
+
+    @Test
+    void templateHeaderAndFooterWithPageNumbers() throws Exception {
+        String body = "<p>Stycke med text som fyller sidan.</p>".repeat(80);
+        byte[] pdf = mvc.perform(multipart("/forms/chromium/convert/html")
+                        .file(html("index.html", "<html lang=\"sv\"><head><title>Beslut</title><style>@page { margin: 25mm 15mm; }</style></head><body><h1>Beslut</h1>" + body + "</body></html>"))
+                        .file(html("header.html", "<html><body><p style=\"font-size: 9pt\">Sidhuvud: <span class=\"title\"></span></p></body></html>"))
+                        .file(html("footer.html", "<html><body><p style=\"font-size: 9pt\">Sida <span class=\"pageNumber\"></span> av <span class=\"totalPages\"></span></p></body></html>"))
+                        .param("pdfa", "PDF/A-1a"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            int pages = doc.getNumberOfPages();
+            assertThat(pages).isGreaterThan(1);
+            org.apache.pdfbox.text.PDFTextStripper stripper = new org.apache.pdfbox.text.PDFTextStripper();
+            stripper.setSortByPosition(true);
+            stripper.setStartPage(2);
+            stripper.setEndPage(2);
+            String page2 = stripper.getText(doc);
+            assertThat(page2).contains("Sidhuvud: Beslut").contains("Sida 2 av " + pages);
+        }
+    }
+
+    @Test
+    void templateBackgroundsFollowPrintBackgroundLikeChromium() throws Exception {
+        String template = "<html lang=\"sv\"><body><div style=\"background-color: #ff0000; height: 200px\">Röd ruta</div></body></html>";
+        assertThat(redPixels(renderTemplate(template, "false"))).isZero();
+        assertThat(redPixels(renderTemplate(template, "true"))).isPositive();
+    }
+
+    @Test
+    void templateOutlineFromHeadings() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/chromium/convert/html")
+                        .file(html("index.html", "<html lang=\"sv\"><body><h1>Beslut</h1><h2>Bakgrund</h2><p>x</p><h2>Skäl</h2><p>y</p></body></html>"))
+                        .param("generateDocumentOutline", "true").param("pdfa", "PDF/A-1a"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            var top = doc.getDocumentCatalog().getDocumentOutline().getFirstChild();
+            assertThat(top.getTitle()).isEqualTo("Beslut");
+            List<String> children = new ArrayList<>();
+            top.children().forEach(child -> children.add(child.getTitle()));
+            assertThat(children).containsExactly("Bakgrund", "Skäl");
+        }
+    }
+
+    @Test
+    void metadataEndsUpInPdfaMetadata() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")).param("pdfa", "PDF/A-1a")
+                        .param("metadata", "{\"Title\": \"Beslut 2026-123\", \"Author\": \"Byggnadsnämnden\", \"Keywords\": [\"bygglov\", \"beslut\"]}"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            assertThat(doc.getDocumentInformation().getTitle()).isEqualTo("Beslut 2026-123");
+            assertThat(doc.getDocumentInformation().getAuthor()).isEqualTo("Byggnadsnämnden");
+            assertThat(doc.getDocumentInformation().getKeywords()).isEqualTo("bygglov, beslut");
+            String xmp = new String(doc.getDocumentCatalog().getMetadata().toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+            assertThat(xmp).contains("Beslut 2026-123").contains("Byggnadsnämnden");
+        }
+    }
+
+    @Test
+    void flattenTurnsFormFieldsIntoContent() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/pdfengines/convert")
+                        .file(new MockMultipartFile("files", "ansokan.pdf", "application/pdf", TestPdfs.withFormField()))
+                        .param("flatten", "true").param("pdfa", "PDF/A-1b"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1B);
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            var form = doc.getDocumentCatalog().getAcroForm(null);
+            assertThat(form == null || form.getFields().isEmpty()).isTrue();
+            assertThat(new org.apache.pdfbox.text.PDFTextStripper().getText(doc)).contains("Anna Andersson");
+        }
+    }
+
+    @Test
+    void fieldsWithoutEffectAreReportedNotSilentlyDropped() throws Exception {
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html("index.html", "<html><body><p>x</p></body></html>"))
+                        .param("waitDelay", "2s").param("userAgent", "x"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(GotenbergOptions.IGNORED_HEADER, "userAgent,waitDelay"));
+    }
+
+    @Test
+    void optionsThatCannotBeHonouredAreRejected() throws Exception {
+        mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")).param("pdfua", "true"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("UNSUPPORTED_OPTION"));
+        mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")).header("Gotenberg-Webhook-Url", "http://x"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html("index.html", "<p>x</p>")).param("singlePage", "true"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void traceIdIsEchoedAndIncludedInErrors() throws Exception {
+        mvc.perform(multipart("/forms/pdfengines/convert")
+                        .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.withTransparency()))
+                        .param("pdfa", "PDF/A-1b").header("Gotenberg-Trace", "arende-4711"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(header().string("Gotenberg-Trace", "arende-4711"))
+                .andExpect(jsonPath("$.traceId").value("arende-4711"))
+                .andExpect(jsonPath("$.reason").value("TRANSPARENCY"));
+    }
+
+    private byte[] renderTemplate(String template, String printBackground) throws Exception {
+        return mvc.perform(multipart("/forms/chromium/convert/html").file(html("index.html", template))
+                        .param("printBackground", printBackground))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+    }
+
+    private static long redPixels(byte[] pdf) throws IOException {
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            BufferedImage image = new PDFRenderer(doc).renderImageWithDPI(0, 40);
+            long red = 0;
+            for (int y = 0; y < image.getHeight(); y++) {
+                for (int x = 0; x < image.getWidth(); x++) {
+                    int rgb = image.getRGB(x, y);
+                    if (((rgb >> 16) & 0xff) > 200 && ((rgb >> 8) & 0xff) < 60 && (rgb & 0xff) < 60) {
+                        red++;
+                    }
+                }
+            }
+            return red;
+        }
+    }
+
+    private static MockMultipartFile html(String name, String content) {
+        return new MockMultipartFile("files", name, "text/html", content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     private static List<String> orientations(byte[] pdf) throws IOException {
         List<String> result = new ArrayList<>();
         try (PDDocument doc = Loader.loadPDF(pdf)) {

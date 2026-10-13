@@ -26,6 +26,7 @@ import se.fileconverter.assets.AssetReloader;
 import se.fileconverter.assets.AssetStore;
 import se.fileconverter.assets.FontInspector;
 import se.fileconverter.html.FontRegistry;
+import se.fileconverter.observability.ConversionTelemetry;
 import se.fileconverter.pdfa.PdfaLevel;
 
 /**
@@ -39,7 +40,11 @@ public class AdminController {
     private final FontRegistry fonts;
     private final CheckService check;
 
-    public AdminController(AssetStore store, AssetReloader reloader, FontRegistry fonts, CheckService check) {
+    private final ConversionTelemetry telemetry;
+
+    public AdminController(AssetStore store, AssetReloader reloader, FontRegistry fonts, CheckService check,
+            ConversionTelemetry telemetry) {
+        this.telemetry = telemetry;
         this.store = store;
         this.reloader = reloader;
         this.fonts = fonts;
@@ -63,6 +68,12 @@ public class AdminController {
         try (var in = AdminController.class.getResourceAsStream("/admin/index.html")) {
             return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(in.readAllBytes());
         }
+    }
+
+    /** Statistik för den här instansen sedan start. För hela klustret: Prometheus. */
+    @GetMapping("/admin/api/stats")
+    public ConversionTelemetry.Stats stats() {
+        return telemetry.snapshot();
     }
 
     @GetMapping("/admin/api/fonts")

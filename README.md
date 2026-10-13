@@ -17,32 +17,56 @@ stället för en trasig PDF.
 | `POST /forms/pdfengines/merge` | PDF-filer, slås ihop i bokstavsordning | PDFBox |
 | `GET /health` | – | `503` tills LibreOffice är igång |
 
-Port `3000`, precis som Gotenberg.
+Port `3000`, precis som Gotenberg. Mätvärden på port `9090`.
 
-### Formulärfält
+### Gotenberg-kompatibilitet
 
-| Fält | Routes | Beskrivning |
-|---|---|---|
-| `pdfa` | alla | `PDF/A-1a` eller `PDF/A-1b`. Krävs för `pdfengines/convert`. |
-| `merge` | libreoffice | `true` slår ihop resultaten till en PDF |
-| `paperWidth`, `paperHeight`, `landscape` | chromium/html | Tal utan enhet är tum (som Gotenberg), annars `mm`, `cm`, `in`, `pt`, `px` |
-| `marginTop`, `marginRight`, `marginBottom`, `marginLeft` | chromium/html | Som ovan |
-| `pdfaStrict` | alla | `false` returnerar filen även om valideringen fallerar (tillägg) |
+Fälten följer Gotenberg 8. Varje fält hör till en av tre grupper:
+**stöds**, **ignoreras** (saknar betydelse här och listas i svarshuvudet
+`X-Converter-Ignored-Fields`, så att inget försvinner i tysthet) eller **avvisas** med `400`
+när resultatet inte kan bli det klienten väntar sig.
 
-Flera filer utan `merge` ger en zip, som i Gotenberg. Huvudet `Gotenberg-Output-Filename` sätter filnamnet.
+| Route | Stöds | Ignoreras | Avvisas |
+|---|---|---|---|
+| alla | `pdfa`, `metadata` (JSON), `flatten`, huvudena `Gotenberg-Output-Filename` och `Gotenberg-Trace` | okända fält | `pdfua=true`, `split*`, `downloadFrom`, `Gotenberg-Webhook-*` |
+| `libreoffice/convert` | `merge`, `landscape`, `nativePageRanges`, `password`, `exportFormFields`, `allowDuplicateFieldNames`, `exportBookmarks`, `exportBookmarksToPdfDestination`, `exportPlaceholders`, `exportNotes`, `exportNotesPages`, `exportOnlyNotesPages`, `exportNotesInMargin`, `convertOooTargetToPdfTarget`, `exportLinksRelativeFsys`, `exportHiddenSlides`, `skipEmptyPages`, `singlePageSheets`, `losslessImageCompression`, `quality`, `reduceImageResolution`, `maxImageResolution`, `addOriginalDocumentAsStream` (ej med PDF/A) | | |
+| `chromium/convert/html` | `header.html`, `footer.html`, `paperWidth`, `paperHeight`, `margin*`, `landscape`, `preferCssPageSize`, `printBackground`, `generateDocumentOutline`, `nativePageRanges` (ej med PDF/A-1a) | `waitDelay`, `waitForExpression`, `cookies`, `userAgent`, `extraHttpHeaders`, `failOn*`, `skipNetworkIdleEvent`, `omitBackground`, `emulatedMediaType=print` | `singlePage`, `scale` ≠ 1, `emulatedMediaType=screen` |
+| `pdfengines/convert`, `merge` | `merge`-ordning i bokstavsordning | | |
+
+Tal utan enhet i pappers- och marginalfält är tum, som i Gotenberg. Annars `mm`, `cm`, `in`, `pt`, `px`.
+
+Detaljer:
+- **`header.html`/`footer.html`** blir löpande sidhuvud och sidfot i sidans marginaler.
+  Klasserna `pageNumber`, `totalPages`, `title` och `date` fylls i som i Chromium. Mallen
+  behöver marginaler som rymmer dem, precis som i Gotenberg.
+- **`printBackground`** är `false` som standard, precis som i Chromium. Bakgrundsfärger och
+  bakgrundsbilder skrivs då inte ut, utom om mallen (eller dess CSS) använder `print-color-adjust`.
+- **`metadata`** skrivs både i dokumentinformationen och i PDF/A-metadatan (XMP).
+- **`landscape`** i LibreOffice gör alla sidformat i dokumentet liggande.
+
+Tillägg: `pdfaStrict=false` returnerar filen även om valideringen fallerar.
+Flera filer utan `merge` ger en zip, som i Gotenberg.
 
 ### Svar
 
 - `X-Pdfa-Level: PDF/A-1a` och `X-Pdfa-Compliant: true|false` när PDF/A har begärts.
-- Fel som `application/problem+json`. `violations` anger exakt vad som stoppade PDF/A:
+- `Gotenberg-Trace`: anropets spårnings-id. Klientens eget id används om det skickas med.
+- Fel som `application/problem+json`. `reason` är en maskinläsbar orsak, `violations` anger exakt
+  vad som stoppade PDF/A, och `traceId` kopplar felet till loggarna:
 
 ```json
 {
   "status": 422,
   "detail": "PDF-filen kan inte göras om till PDF/A-1 utan att utseendet ändras.",
-  "violations": ["Transparens på sida 1 (tillåts inte i PDF/A-1)."]
+  "reason": "TRANSPARENCY",
+  "violations": ["Transparens på sida 1 (tillåts inte i PDF/A-1)."],
+  "traceId": "arende-4711"
 }
 ```
+
+Orsaker: `ENCRYPTED`, `SIGNED`, `UNTAGGED`, `TRANSPARENCY`, `MISSING_FONT`, `IMAGE_TOO_LARGE`,
+`PDFA_INVALID`, `UNREADABLE_PDF`, `LIBREOFFICE_FAILED`, `MERGE_FAILED`, `UNSUPPORTED_FORMAT`,
+`UNSUPPORTED_OPTION`, `DUPLICATE_FILENAME`, `BAD_REQUEST`, `UNAVAILABLE`, `INTERNT_FEL`.
 
 ### Exempel
 
@@ -133,15 +157,35 @@ curl -u admin:$PASS -H 'X-Requested-With: cli' -F files=@MinFont-Regular.ttf htt
 curl -u admin:$PASS -o resurser.zip http://localhost:3000/admin/api/export
 ```
 
+## Övervakning
+
+Mätvärden finns på en egen port (`9090`) i Prometheus-format: `/actuator/prometheus`. Podden har
+annoteringar för Prometheus.
+
+| Mätvärde | Taggar | |
+|---|---|---|
+| `converter_conversions_total` | `route`, `pdfa`, `outcome` | `ok`, `underkand`, `avvisad`, `fel` |
+| `converter_rejections_total` | `reason` | Varför filer avvisas, se orsakerna ovan |
+| `converter_pdfa_violations_total` | `rule` | Vilka PDF/A-regler (veraPDF) som bryts |
+| `converter_conversion_duration_seconds` | `route`, `outcome` | Histogram |
+| `converter_busy_total` | | Anrop som fick `503` för att instansen var full |
+
+Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`, `ms`, `filer`)
+med spårnings-id. JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`.
+
+Fliken **Statistik** i administrationen visar samma sak för den instans du är inloggad mot, plus de
+100 senaste avvisade eller misslyckade anropen med filnamn, orsak och spårnings-id.
+
 ## Skillnader mot Gotenberg
 
 - HTML renderas med openhtmltopdf, inte Chromium. Det gäller CSS 2.1 med delar av CSS3: **inte
   flexbox, grid eller JavaScript**, och `opacity` och skuggor ignoreras. Det passar egna mallar
-  och är det som gör PDF/A-1a möjligt. Sidhuvud och sidfot görs med CSS
-  (`@page` + `position: running()`), inte med `header.html`/`footer.html`.
+  och är det som gör PDF/A-1a möjligt. `header.html`/`footer.html` fungerar som i Gotenberg, och
+  mallar kan också använda CSS direkt (`@page` + `position: running()`).
 - Mallar kan bara läsa filer som skickats med i anropet. Nätverksanrop och övriga filsystemet är spärrade.
+- Routes för URL-konvertering, skärmdumpar och split finns inte.
 - Standardformat för HTML är A4 (Gotenberg: Letter) om varken mallen eller fälten anger något.
-- Bara PDF/A-1a och PDF/A-1b. PDF/UA och övriga Gotenberg-fält ignoreras.
+- Bara PDF/A-1a och PDF/A-1b. Se tabellen ovan för vilka fält som stöds.
 
 ## Säkerhet och robusthet
 

@@ -176,33 +176,41 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
-    /**
-     * @param input filen, med filändelse som avgör format
-     * @param pdfA  exportera som taggad PDF/A, underlag för PDF/A-1-normaliseringen
-     */
     public byte[] toPdf(Path input, boolean pdfA) {
+        return toPdf(input, OfficeOptions.defaults(pdfA));
+    }
+
+    /** @param input filen, med filändelse som avgör format */
+    public byte[] toPdf(Path input, OfficeOptions options) {
         if (!config.enabled()) {
-            throw new ConversionException(HttpStatus.SERVICE_UNAVAILABLE, "LibreOffice är inte aktiverat i den här instansen.");
+            throw new ConversionException(HttpStatus.SERVICE_UNAVAILABLE, ConversionException.Reason.UNAVAILABLE,
+                    "LibreOffice är inte aktiverat i den här instansen.", List.of(), null);
         }
         String extension = extension(input);
         DocumentFormat inputFormat = DefaultDocumentFormatRegistry.getInstance().getFormatByExtension(extension);
         if (inputFormat == null) {
-            throw ConversionException.badRequest("Filformatet '." + extension + "' stöds inte.");
+            throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_FORMAT, "Filformatet '." + extension + "' stöds inte.");
         }
-        Map<String, Object> filterData = new HashMap<>();
-        if (pdfA) {
+        Map<String, Object> filterData = new HashMap<>(options.filterData());
+        if (options.pdfA()) {
             filterData.put("SelectPdfVersion", 2);
             filterData.put("UseTaggedPDF", true);
         }
         Path output = input.resolveSibling(input.getFileName() + ".pdf");
         lock.readLock().lock();
         try {
-            LocalConverter.builder()
+            LocalConverter.Builder converter = LocalConverter.builder()
                     .officeManager(officeManager)
                     // Uppdatera aldrig länkar (OLE, externa data) vid inläsning.
                     .loadProperty("UpdateDocMode", (short) 0)
-                    .storeProperty("FilterData", filterData)
-                    .build()
+                    .storeProperty("FilterData", filterData);
+            if (options.password() != null) {
+                converter.loadProperty("Password", options.password());
+            }
+            if (options.landscape()) {
+                converter.filterChain(new LandscapeFilter());
+            }
+            converter.build()
                     .convert(input.toFile())
                     .as(inputFormat)
                     .to(output.toFile())
@@ -210,7 +218,7 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
                     .execute();
             return Files.readAllBytes(output);
         } catch (OfficeException e) {
-            throw new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT,
+            throw new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT, ConversionException.Reason.LIBREOFFICE_FAILED,
                     "LibreOffice kunde inte konvertera '" + input.getFileName() + "'.", List.of(String.valueOf(e.getMessage())), e);
         } catch (IOException e) {
             throw new UncheckedIOException(e);

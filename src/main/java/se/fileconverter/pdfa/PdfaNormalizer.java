@@ -115,7 +115,7 @@ public class PdfaNormalizer {
             doc.save(out, CompressParameters.NO_COMPRESSION);
             return out.toByteArray();
         } catch (IOException e) {
-            throw new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT,
+            throw new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT, ConversionException.Reason.UNREADABLE_PDF,
                     "PDF-filen kunde inte bearbetas: " + e.getMessage(), List.of(), e);
         }
     }
@@ -124,23 +124,23 @@ public class PdfaNormalizer {
         try {
             return Loader.loadPDF(pdf);
         } catch (InvalidPasswordException e) {
-            throw ConversionException.unprocessable("PDF-filen är lösenordsskyddad.",
+            throw ConversionException.unprocessable(ConversionException.Reason.ENCRYPTED, "PDF-filen är lösenordsskyddad.",
                     List.of("PDF/A tillåter inte kryptering. Skicka filen utan lösenord."));
         }
     }
 
     private static void rejectUnsupported(PDDocument doc, PdfaLevel level) throws IOException {
         if (doc.isEncrypted()) {
-            throw ConversionException.unprocessable("PDF-filen är krypterad.",
+            throw ConversionException.unprocessable(ConversionException.Reason.ENCRYPTED, "PDF-filen är krypterad.",
                     List.of("PDF/A tillåter inte kryptering. Skicka filen utan behörighetsskydd."));
         }
         if (!doc.getSignatureDictionaries().isEmpty()) {
-            throw ConversionException.unprocessable("PDF-filen är redan signerad.",
+            throw ConversionException.unprocessable(ConversionException.Reason.SIGNED, "PDF-filen är redan signerad.",
                     List.of("Konvertering skulle bryta signaturen. Konvertera före signering."));
         }
         if (level.requiresTagging()) {
             taggingProblem(doc).ifPresent(problem -> {
-                throw ConversionException.unprocessable("PDF-filen saknar taggstruktur och kan inte bli " + level.label() + ".",
+                throw ConversionException.unprocessable(ConversionException.Reason.UNTAGGED, "PDF-filen saknar taggstruktur och kan inte bli " + level.label() + ".",
                         List.of(problem, "PDF/A-1a kräver en taggad PDF. Exportera från Word med 'Dokumentstrukturtaggar för"
                                 + " tillgänglighet', eller begär PDF/A-1b."));
             });
@@ -351,7 +351,8 @@ public class PdfaNormalizer {
             missingFonts.forEach(font -> details.add("Fonten '" + font + "' är inte inbäddad."));
             transparency.forEach(where -> details.add("Transparens " + where + " (tillåts inte i PDF/A-1)."));
             if (!details.isEmpty()) {
-                throw ConversionException.unprocessable("PDF-filen kan inte göras om till PDF/A-1 utan att utseendet ändras.", details);
+                throw ConversionException.unprocessable(missingFonts.isEmpty() ? ConversionException.Reason.TRANSPARENCY : ConversionException.Reason.MISSING_FONT,
+                        "PDF-filen kan inte göras om till PDF/A-1 utan att utseendet ändras.", details);
             }
         }
 
@@ -426,7 +427,7 @@ public class PdfaNormalizer {
             }
             PDImageXObject replacement = flattenedImages.get(stream);
             if (replacement == null && (long) image.getWidth() * image.getHeight() > MAX_IMAGE_PIXELS) {
-                throw ConversionException.unprocessable("PDF-filen innehåller en för stor bild.",
+                throw ConversionException.unprocessable(ConversionException.Reason.IMAGE_TOO_LARGE, "PDF-filen innehåller en för stor bild.",
                         List.of("Bilden på sida " + pageNumber + " är " + image.getWidth() + " × " + image.getHeight()
                                 + " pixlar och behöver göras om. Gränsen är " + MAX_IMAGE_PIXELS / 1_000_000 + " megapixel."));
             }

@@ -13,6 +13,10 @@ spec:
     metadata:
       labels:
         app: file-converter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /actuator/prometheus
     spec:
       securityContext:
         runAsNonRoot: true
@@ -22,6 +26,9 @@ spec:
           image: file-converter:latest  # ersätt med ert registry
           ports:
             - containerPort: 3000
+              name: http
+            - containerPort: 9090
+              name: metrics
           env:
             # En LibreOffice-process per samtidig Office-konvertering. Höj tillsammans med minnet.
             - name: CONVERTER_OFFICE_POOL_SIZE

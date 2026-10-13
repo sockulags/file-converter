@@ -14,6 +14,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import se.fileconverter.config.ConverterProperties;
+import se.fileconverter.observability.ConversionTelemetry;
 
 /**
  * Begränsar antalet samtidiga konverteringar per instans. Utan gräns kan några stora filer samtidigt
@@ -35,7 +36,10 @@ public class ConcurrencyLimit implements HandlerInterceptor, WebMvcConfigurer {
     private final Semaphore permits;
     private final long queueTimeoutMillis;
 
-    public ConcurrencyLimit(ConverterProperties properties) {
+    private final ConversionTelemetry telemetry;
+
+    public ConcurrencyLimit(ConverterProperties properties, ConversionTelemetry telemetry) {
+        this.telemetry = telemetry;
         ConverterProperties.Limits limits = properties.limits();
         int max = limits.maxConcurrent() > 0 ? limits.maxConcurrent() : Runtime.getRuntime().availableProcessors();
         this.permits = new Semaphore(max, true);
@@ -53,6 +57,7 @@ public class ConcurrencyLimit implements HandlerInterceptor, WebMvcConfigurer {
             return true;
         }
         if (!permits.tryAcquire(queueTimeoutMillis, TimeUnit.MILLISECONDS)) {
+            telemetry.busy();
             response.setHeader("Retry-After", "10");
             response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, "Tjänsten är upptagen. Försök igen om en stund.");
             return false;

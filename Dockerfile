@@ -36,5 +36,5 @@ WORKDIR /app
 COPY --from=build /src/target/file-converter-*.jar app.jar
 
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=40"
-EXPOSE 3000
+EXPOSE 3000 9090
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

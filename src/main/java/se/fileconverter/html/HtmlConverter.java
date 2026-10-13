@@ -38,10 +38,22 @@ public class HtmlConverter {
     }
 
     /**
-     * @param workDir   katalog med index.html och dess resurser
-     * @param pageCss   @page-regler från formulärfälten, läggs sist så att de vinner över mallen
+     * @param pageCss         @page-regler från formulärfälten, läggs sist så att de vinner över mallen
+     * @param printBackground som Chromium: utan den skrivs bakgrundsfärger och bakgrundsbilder inte ut
+     * @param outline         bokmärken i PDF:en från mallens rubriker (Gotenbergs generateDocumentOutline)
      */
+    public record Options(Optional<String> pageCss, boolean printBackground, boolean outline) {
+        public static Options defaults() {
+            return new Options(Optional.empty(), false, false);
+        }
+    }
+
     public byte[] toPdf(Path workDir, Optional<String> pageCss, Optional<PdfaLevel> pdfa) {
+        return toPdf(workDir, new Options(pageCss, false, false), pdfa);
+    }
+
+    /** @param workDir katalog med index.html, ev. header.html/footer.html, och resurser */
+    public byte[] toPdf(Path workDir, Options options, Optional<PdfaLevel> pdfa) {
         Path index = workDir.resolve("index.html");
         if (!Files.isRegularFile(index)) {
             throw ConversionException.badRequest("Filen index.html saknas i anropet.");
@@ -51,7 +63,16 @@ public class HtmlConverter {
             // Standardfont först så att mallens egna regler vinner. Utan den faller openhtmltopdf
             // tillbaka på inbyggda PDF-fonter som inte bäddas in, och då blir filen inte PDF/A.
             html.head().prepend("<style>html { font-family: sans-serif; }</style>");
-            pageCss.ifPresent(css -> html.head().appendElement("style").appendText(css));
+            HeaderFooter.apply(html, workDir);
+            if (!options.printBackground() && !mentionsPrintColorAdjust(html, workDir)) {
+                // Chromium skriver inte ut bakgrunder utan printBackground (Gotenbergs standard), utom där
+                // mallen själv kräver det med print-color-adjust.
+                html.head().appendElement("style").appendText("*, *::before, *::after { background: none !important; }");
+            }
+            if (options.outline()) {
+                Outline.apply(html);
+            }
+            options.pageCss().ifPresent(css -> html.head().appendElement("style").appendText(css));
 
             PdfRendererBuilder builder = new PdfRendererBuilder();
             builder.useFastMode();
@@ -76,6 +97,20 @@ public class HtmlConverter {
         } catch (IOException e) {
             throw new IllegalStateException("HTML-renderingen misslyckades", e);
         }
+    }
+
+    private static boolean mentionsPrintColorAdjust(Document html, Path workDir) throws IOException {
+        if (html.html().contains("print-color-adjust")) {
+            return true;
+        }
+        try (var files = Files.list(workDir)) {
+            for (Path css : files.filter(p -> p.getFileName().toString().toLowerCase().endsWith(".css")).toList()) {
+                if (Files.readString(css).contains("print-color-adjust")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     static boolean isAllowed(String uri, Path root) {

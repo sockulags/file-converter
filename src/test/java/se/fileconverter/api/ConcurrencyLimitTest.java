@@ -24,7 +24,8 @@ class ConcurrencyLimitTest {
 
     private final ConcurrencyLimit limit = new ConcurrencyLimit(new ConverterProperties(null,
             new ConverterProperties.Fonts(List.of(), Map.of()), null, null, null,
-            new ConverterProperties.Limits(1, Duration.ofMillis(50))));
+            new ConverterProperties.Limits(1, Duration.ofMillis(50))),
+            new se.fileconverter.observability.ConversionTelemetry(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
 
     @Test
     void requestsOverTheLimitGet503UntilASlotIsFree() throws Exception {

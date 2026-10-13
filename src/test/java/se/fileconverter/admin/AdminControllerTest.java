@@ -240,6 +240,31 @@ class AdminControllerTest {
     }
 
     @Test
+    void statsShowConversionsRejectionsAndRecentFailuresWithTraceId() throws Exception {
+        mvc.perform(multipart("/forms/pdfengines/convert")
+                        .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.withTransparency()))
+                        .param("pdfa", "PDF/A-1b").header("Gotenberg-Trace", "statistik-1"))
+                .andExpect(status().isUnprocessableContent());
+        mvc.perform(multipart("/forms/pdfengines/convert")
+                        .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.untaggedWithAlphaImage()))
+                        .param("pdfa", "PDF/A-1b"))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/admin/api/stats").header("Authorization", AUTH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.routes[?(@.route == 'pdfengines-convert')].outcomes.ok").value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.greaterThanOrEqualTo(1))))
+                .andExpect(jsonPath("$.rejections.TRANSPARENCY").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.recentFailures[?(@.traceId == 'statistik-1')].reason").value(org.hamcrest.Matchers.hasItem("TRANSPARENCY")));
+
+        assertThat(meters.get("converter.rejections").tag("reason", "TRANSPARENCY").counter().count()).isGreaterThanOrEqualTo(1);
+        assertThat(meters.get("converter.conversions").tag("route", "pdfengines-convert").tag("outcome", "ok").counter().count())
+                .isGreaterThanOrEqualTo(1);
+    }
+
+    @Autowired
+    io.micrometer.core.instrument.MeterRegistry meters;
+
+    @Test
     void adminPageIsServed() throws Exception {
         mvc.perform(get("/admin/index.html").header("Authorization", AUTH))
                 .andExpect(status().isOk())

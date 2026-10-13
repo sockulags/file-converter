@@ -34,7 +34,7 @@ public record Workspace(Path dir, List<Path> files) implements AutoCloseable {
                 Path target = workspace.dir().resolve(name);
                 if (workspace.files().contains(target)) {
                     // Annars skriver den andra filen över den första och ena dokumentet försvinner tyst.
-                    throw ConversionException.badRequest("Filnamnet '" + name + "' förekommer flera gånger. Ge filerna unika namn.");
+                    throw ConversionException.badRequest(ConversionException.Reason.DUPLICATE_FILENAME, "Filnamnet '" + name + "' förekommer flera gånger. Ge filerna unika namn.");
                 }
                 upload.transferTo(target);
                 workspace.files().add(target);

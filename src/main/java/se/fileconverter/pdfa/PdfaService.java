@@ -28,7 +28,7 @@ public class PdfaService {
         byte[] normalized = normalizer.normalize(pdf, level);
         PdfaValidator.Report report = validator.validate(normalized, level);
         if (!report.compliant() && (strict != null ? strict : strictByDefault)) {
-            throw ConversionException.unprocessable(
+            throw ConversionException.unprocessable(ConversionException.Reason.PDFA_INVALID,
                     "Resultatet klarar inte " + level.label() + "-valideringen (veraPDF).", report.violations());
         }
         return new Result(normalized, report);

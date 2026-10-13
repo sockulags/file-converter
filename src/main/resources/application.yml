@@ -12,6 +12,24 @@ spring:
 server:
   port: 3000  # samma port som Gotenberg
 
+# Mätvärden på en egen port, skild från konverterings-API:t: /actuator/prometheus och /actuator/health.
+management:
+  server:
+    port: 9090
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    tags:
+      application: file-converter
+
+# Spårnings-id (Gotenberg-Trace) på varje loggrad. Strukturerade loggar (JSON):
+# LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs
+logging:
+  pattern:
+    correlation: "[%X{traceId:-}] "
+
 converter:
   office:
     enabled: true

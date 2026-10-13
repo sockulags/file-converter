@@ -26,7 +26,7 @@ public class PdfMerger {
         try {
             merger.mergeDocuments(IOUtils.createMemoryOnlyStreamCache());
         } catch (IOException e) {
-            throw ConversionException.unprocessable("PDF-filerna kunde inte slås ihop.", List.of(String.valueOf(e.getMessage())));
+            throw ConversionException.unprocessable(ConversionException.Reason.MERGE_FAILED, "PDF-filerna kunde inte slås ihop.", List.of(String.valueOf(e.getMessage())));
         }
         return out.toByteArray();
     }

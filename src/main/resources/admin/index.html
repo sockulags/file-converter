@@ -69,6 +69,7 @@
 </header>
 <nav role="tablist">
   <button role="tab" data-tab="check" aria-selected="true">Testa fil</button>
+  <button role="tab" data-tab="stats" aria-selected="false">Statistik</button>
   <button role="tab" data-tab="fonts" aria-selected="false">Fonter</button>
   <button role="tab" data-tab="aliases" aria-selected="false">Alias</button>
   <button role="tab" data-tab="bundle" aria-selected="false">Export och import</button>
@@ -91,6 +92,26 @@
   </div>
   <div id="check-batch"></div>
   <div id="check-result"></div>
+</section>
+
+<section id="stats" hidden>
+  <div class="panel">
+    <div class="row" style="margin-top:0;justify-content:space-between">
+      <h2>Konverteringar</h2>
+      <button class="secondary" id="stats-refresh">Uppdatera</button>
+    </div>
+    <p class="hint" id="stats-meta"></p>
+    <table><thead><tr><th>Route</th><th>Totalt</th><th>Godkända</th><th>Underkända</th><th>Avvisade</th><th>Fel</th><th>Snitt</th><th>Längst</th></tr></thead><tbody id="stats-routes"></tbody></table>
+  </div>
+  <div class="grid">
+    <div class="panel"><h2>Varför filer avvisas</h2><table><tbody id="stats-reasons"></tbody></table></div>
+    <div class="panel"><h2>PDF/A-regler som bryts oftast</h2><table><tbody id="stats-rules"></tbody></table></div>
+  </div>
+  <div class="panel">
+    <h2>Senaste fel</h2>
+    <p class="hint">De 100 senaste avvisade, underkända eller misslyckade anropen. Spårnings-id:t står i svaret (huvudet <code>Gotenberg-Trace</code>) och på alla loggrader för anropet.</p>
+    <table><thead><tr><th>Tid</th><th>Route</th><th>Filer</th><th>Utfall</th><th>Orsak</th><th>Spårnings-id</th></tr></thead><tbody id="stats-failures"></tbody></table>
+  </div>
 </section>
 
 <section id="fonts" hidden>
@@ -183,6 +204,7 @@ document.querySelectorAll('nav button').forEach(button => button.addEventListene
   document.querySelectorAll('nav button').forEach(b => b.setAttribute('aria-selected', b === button));
   document.querySelectorAll('main > section').forEach(s => s.hidden = s.id !== button.dataset.tab);
   if (button.dataset.tab === 'fonts') loadFonts();
+  if (button.dataset.tab === 'stats') loadStats();
   if (button.dataset.tab === 'aliases') loadAliases();
 }));
 
@@ -346,6 +368,42 @@ function renderCheck(r) {
     + '<a class="primary" download="resultat.pdf" href="' + previewUrl + '">Ladda ner PDF</a></div>'
     + '<iframe title="Förhandsvisning" src="' + previewUrl + '"></iframe></div>';
 }
+
+// Statistik
+const reasonText = {
+  BAD_REQUEST: 'Felaktigt anrop', UNSUPPORTED_FORMAT: 'Filformat stöds inte', UNSUPPORTED_OPTION: 'Fält eller värde stöds inte',
+  DUPLICATE_FILENAME: 'Samma filnamn flera gånger', ENCRYPTED: 'Krypterad eller lösenordsskyddad', SIGNED: 'Redan signerad',
+  UNTAGGED: 'Saknar taggar (1a)', TRANSPARENCY: 'Transparens', MISSING_FONT: 'Font inte inbäddad', IMAGE_TOO_LARGE: 'För stor bild',
+  PDFA_INVALID: 'Klarar inte veraPDF', UNREADABLE_PDF: 'PDF:en går inte att läsa', LIBREOFFICE_FAILED: 'LibreOffice misslyckades',
+  MERGE_FAILED: 'Merge misslyckades', UNAVAILABLE: 'Inte tillgänglig', INTERNT_FEL: 'Internt fel'
+};
+const outcomeBadge = {ok: 'ok', underkand: 'bad', avvisad: 'warn', fel: 'bad'};
+const outcomeText = {ok: 'godkänd', underkand: 'underkänd', avvisad: 'avvisad', fel: 'fel'};
+
+async function loadStats() {
+  const s = await api('stats');
+  $('stats-meta').textContent = 'Instans ' + s.instance + ', sedan ' + new Date(s.since).toLocaleString('sv-SE')
+    + '. Varje instans räknar för sig; för hela klustret, använd Prometheus. Anrop som fick 503 (full kö): ' + s.busy + '.';
+  const ms = v => Math.round(v).toLocaleString('sv-SE') + ' ms';
+  $('stats-routes').innerHTML = s.routes.map(r => '<tr><td>' + esc(r.route) + '</td><td>' + r.count + '</td>'
+    + ['ok', 'underkand', 'avvisad', 'fel'].map(o => '<td>' + (r.outcomes[o] || 0) + '</td>').join('')
+    + '<td>' + ms(r.meanMillis) + '</td><td>' + ms(r.maxMillis) + '</td></tr>').join('')
+    || '<tr><td colspan="8" class="empty">Inga konverteringar ännu.</td></tr>';
+  $('stats-reasons').innerHTML = Object.entries(s.rejections).map(([reason, n]) =>
+    '<tr><td>' + esc(reasonText[reason] || reason) + ' <span class="meta">' + esc(reason) + '</span></td><td>' + n + '</td></tr>').join('')
+    || '<tr><td class="empty">Inga avvisningar.</td></tr>';
+  $('stats-rules').innerHTML = Object.entries(s.violatedRules).map(([rule, n]) =>
+    '<tr><td>' + esc(rule) + '</td><td>' + n + '</td></tr>').join('')
+    || '<tr><td class="empty">Inga brutna regler.</td></tr>';
+  $('stats-failures').innerHTML = s.recentFailures.map(f => '<tr><td>' + new Date(f.time).toLocaleString('sv-SE') + '</td>'
+    + '<td>' + esc(f.route) + '</td><td>' + esc(f.files.join(', ')) + '</td>'
+    + '<td><span class="badge ' + (outcomeBadge[f.outcome] || 'muted') + '">' + esc(outcomeText[f.outcome] || f.outcome) + '</span></td>'
+    + '<td>' + esc(reasonText[f.reason] || f.reason || '') + (f.message ? '<br><span class="meta">' + esc(f.message) + '</span>' : '')
+    + (f.details.length ? '<ul class="violations">' + f.details.map(d => '<li>' + esc(d) + '</li>').join('') + '</ul>' : '') + '</td>'
+    + '<td><code>' + esc(f.traceId) + '</code></td></tr>').join('')
+    || '<tr><td colspan="6" class="empty">Inga fel.</td></tr>';
+}
+$('stats-refresh').addEventListener('click', loadStats);
 
 // Fonter
 let allFonts = [];
