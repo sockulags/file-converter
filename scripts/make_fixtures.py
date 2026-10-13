@@ -108,3 +108,29 @@ def dokument_med_testfont(name):
 
 testfonter()
 dokument_med_testfont("egen-font.docx")
+
+
+# Stående sida, liggande bilaga, stående igen: sidorienteringen ska följa med per avsnitt.
+def staende_liggande(name):
+    from docx.enum.section import WD_ORIENT, WD_SECTION
+
+    doc = Document()
+    doc.core_properties.title = "Stående och liggande"
+    doc.add_heading("Beslut (stående)", 1)
+    doc.add_paragraph("Första sidan är stående.")
+    landscape = doc.add_section(WD_SECTION.NEW_PAGE)
+    landscape.orientation = WD_ORIENT.LANDSCAPE
+    landscape.page_width, landscape.page_height = landscape.page_height, landscape.page_width
+    doc.add_heading("Bilaga (liggande)", 1)
+    table = doc.add_table(rows=2, cols=8)
+    table.style = "Table Grid"
+    for i, cell in enumerate(table.rows[0].cells):
+        cell.text = f"Kolumn {i + 1}"
+    portrait = doc.add_section(WD_SECTION.NEW_PAGE)
+    portrait.orientation = WD_ORIENT.PORTRAIT
+    portrait.page_width, portrait.page_height = portrait.page_height, portrait.page_width
+    doc.add_heading("Underskrift (stående)", 1)
+    doc.save(OUT / name)
+
+
+staende_liggande("staende-liggande.docx")

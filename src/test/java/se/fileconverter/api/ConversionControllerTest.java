@@ -214,6 +214,71 @@ class ConversionControllerTest {
     }
 
     @Test
+    void wordWithLandscapeSectionKeepsOrientationPerPage() throws Exception {
+        byte[] pdf = toPdfa1a("staende-liggande.docx");
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        assertThat(orientations(pdf)).containsExactly("stående", "liggande", "stående");
+    }
+
+    @Test
+    void templateCanSwitchToLandscapeWithNamedPage() throws Exception {
+        String html = """
+                <html lang="sv"><head><style>
+                  @page { size: A4; }
+                  @page bred { size: A4 landscape; }
+                  .bilaga { page: bred; }
+                </style></head><body>
+                  <h1>Beslut</h1><p>Stående.</p>
+                  <div class="bilaga"><h2>Bilaga</h2><p>Liggande.</p></div>
+                  <div><h2>Underskrift</h2><p>Stående igen.</p></div>
+                </body></html>""";
+        byte[] pdf = mvc.perform(multipart("/forms/chromium/convert/html")
+                        .file(new MockMultipartFile("files", "index.html", "text/html", html.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .param("pdfa", "PDF/A-1a"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        assertThat(orientations(pdf)).containsExactly("stående", "liggande", "stående");
+    }
+
+    @Test
+    void mergeKeepsEachDocumentsOrientation() throws Exception {
+        byte[] merged = mvc.perform(multipart("/forms/pdfengines/merge")
+                        .file(new MockMultipartFile("files", "1.pdf", "application/pdf", toPdfa1a("beslut.docx")))
+                        .file(new MockMultipartFile("files", "2.pdf", "application/pdf", toPdfa1a("staende-liggande.docx")))
+                        .param("pdfa", "PDF/A-1a"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(merged, PdfaLevel.PDFA_1A);
+        assertThat(orientations(merged)).containsExactly("stående", "stående", "liggande", "stående");
+    }
+
+    @Test
+    void mergeToPdfa1aNamesTheUntaggedFile() throws Exception {
+        mvc.perform(multipart("/forms/pdfengines/merge")
+                        .file(new MockMultipartFile("files", "1-beslut.pdf", "application/pdf", toPdfa1a("beslut.docx")))
+                        .file(new MockMultipartFile("files", "2-kundfil.pdf", "application/pdf", TestPdfs.untaggedWithAlphaImage()))
+                        .param("pdfa", "PDF/A-1a"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.violations[0]").value(org.hamcrest.Matchers.startsWith("2-kundfil.pdf")));
+    }
+
+    private static List<String> orientations(byte[] pdf) throws IOException {
+        List<String> result = new ArrayList<>();
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            for (PDPage page : doc.getPages()) {
+                boolean rotated = page.getRotation() % 180 != 0;
+                boolean wide = page.getMediaBox().getWidth() > page.getMediaBox().getHeight();
+                result.add(wide != rotated ? "liggande" : "stående");
+            }
+        }
+        return result;
+    }
+
+    @Test
     void duplicateFileNamesAreRejectedInsteadOfLosingADocument() throws Exception {
         mvc.perform(multipart("/forms/pdfengines/merge")
                         .file(new MockMultipartFile("files", "a.pdf", "application/pdf", TestPdfs.untaggedWithAlphaImage()))

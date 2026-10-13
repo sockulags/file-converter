@@ -18,12 +18,15 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.apache.fontbox.cff.CFFCIDFont;
 import org.apache.fontbox.cff.CFFFont;
 import org.apache.fontbox.cff.CFFType1Font;
 import org.apache.fontbox.ttf.TrueTypeFont;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.contentstream.operator.Operator;
+import org.apache.pdfbox.pdfparser.PDFStreamParser;
 import org.apache.pdfbox.cos.COSArray;
 import org.apache.pdfbox.cos.COSBase;
 import org.apache.pdfbox.cos.COSDictionary;
@@ -135,11 +138,67 @@ public class PdfaNormalizer {
             throw ConversionException.unprocessable("PDF-filen är redan signerad.",
                     List.of("Konvertering skulle bryta signaturen. Konvertera före signering."));
         }
-        if (level.requiresTagging() && !isTagged(doc.getDocumentCatalog())) {
-            throw ConversionException.unprocessable("PDF-filen saknar taggstruktur och kan inte bli " + level.label() + ".",
-                    List.of("PDF/A-1a kräver en taggad PDF. Exportera från Word med 'Dokumentstrukturtaggar för tillgänglighet',"
-                            + " eller begär PDF/A-1b."));
+        if (level.requiresTagging()) {
+            taggingProblem(doc).ifPresent(problem -> {
+                throw ConversionException.unprocessable("PDF-filen saknar taggstruktur och kan inte bli " + level.label() + ".",
+                        List.of(problem, "PDF/A-1a kräver en taggad PDF. Exportera från Word med 'Dokumentstrukturtaggar för"
+                                + " tillgänglighet', eller begär PDF/A-1b."));
+            });
         }
+    }
+
+    /** Varför filen inte duger som underlag för PDF/A-1a, eller tomt om den är taggad hela vägen. */
+    public static Optional<String> taggingProblem(byte[] pdf) {
+        try (PDDocument doc = load(pdf)) {
+            return taggingProblem(doc);
+        } catch (IOException e) {
+            return Optional.of("Filen kunde inte läsas: " + e.getMessage());
+        }
+    }
+
+    private static Optional<String> taggingProblem(PDDocument doc) throws IOException {
+        if (!isTagged(doc.getDocumentCatalog())) {
+            return Optional.of("Filen har ingen taggstruktur.");
+        }
+        List<Integer> untagged = untaggedPages(doc);
+        if (!untagged.isEmpty()) {
+            String pages = untagged.stream().limit(10).map(String::valueOf).collect(java.util.stream.Collectors.joining(", "))
+                    + (untagged.size() > 10 ? " m.fl." : "");
+            return Optional.of("Sida " + pages + " saknar taggar, t.ex. efter sammanslagning med en otaggad fil.");
+        }
+        return Optional.empty();
+    }
+
+    private static final Set<String> DRAWING_OPERATORS = Set.of("Tj", "TJ", "'", "\"", "Do", "BI", "sh",
+            "f", "F", "f*", "B", "B*", "b", "b*", "S", "s");
+
+    /**
+     * Sidor (1-baserade) som ritar något men saknar märkt innehåll. veraPDF godkänner PDF/A-1a även
+     * när bara en del av dokumentet är taggat, t.ex. när en otaggad fil slagits ihop med en taggad.
+     */
+    private static List<Integer> untaggedPages(PDDocument doc) throws IOException {
+        List<Integer> untagged = new ArrayList<>();
+        int number = 0;
+        for (PDPage page : doc.getPages()) {
+            number++;
+            if (page.getCOSObject().containsKey(COSName.STRUCT_PARENTS) || !page.hasContents()) {
+                continue;
+            }
+            boolean draws = false;
+            boolean marked = false;
+            PDFStreamParser parser = new PDFStreamParser(page);
+            for (Object token = parser.parseNextToken(); token != null && !marked; token = parser.parseNextToken()) {
+                if (token instanceof Operator operator) {
+                    String name = operator.getName();
+                    marked = name.equals("BDC") || name.equals("BMC");
+                    draws |= DRAWING_OPERATORS.contains(name);
+                }
+            }
+            if (draws && !marked) {
+                untagged.add(number);
+            }
+        }
+        return untagged;
     }
 
     /**

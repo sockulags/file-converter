@@ -74,6 +74,10 @@ public final class FontInspector {
                     warnings.add("Licensen förbjuder delmängder, men PDF:er bäddar normalt in delmängder. Kontrollera licensen.");
                 }
             }
+            if (ttf.getTableMap().containsKey("fvar")) {
+                warnings.add("Variabel font: bara standardvikten bäddas in i PDF. Ladda upp statiska fonter per vikt"
+                        + " (t.ex. Regular, Bold) för att fetstil och andra vikter ska bli rätt.");
+            }
             int weight = os2 != null ? os2.getWeightClass() : 400;
             boolean italic = os2 != null && (os2.getFsSelection() & 1) != 0;
             return new FontInfo(family, style, weight, italic, List.copyOf(warnings));

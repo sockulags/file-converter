@@ -5,6 +5,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # veraPDF kräver javax-JAXB 2.3. Med JAXB 4 (Jakarta) hittar veraPDF inga valideringsprofiler.
+      - dependency-name: "com.sun.xml.bind:*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "javax.xml.bind:jaxb-api"
+        update-types: ["version-update:semver-major"]
     groups:
       spring:
         patterns: ["org.springframework*"]

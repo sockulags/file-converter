@@ -30,6 +30,7 @@ import se.fileconverter.html.HtmlConverter;
 import se.fileconverter.office.OfficeConverter;
 import se.fileconverter.pdf.PdfMerger;
 import se.fileconverter.pdfa.PdfaLevel;
+import se.fileconverter.pdfa.PdfaNormalizer;
 import se.fileconverter.pdfa.PdfaService;
 import se.fileconverter.pdfa.PdfaValidator;
 
@@ -120,7 +121,20 @@ public class ConversionController {
         Optional<PdfaLevel> level = PdfaLevel.parse(request.getParameter("pdfa"));
         Boolean strict = bool(request, "pdfaStrict");
         try (Workspace ws = Workspace.from(request)) {
-            List<byte[]> pdfs = ws.files().stream().sorted(ALPHANUMERIC).map(ConversionController::read).toList();
+            List<Path> files = ws.files().stream().sorted(ALPHANUMERIC).toList();
+            List<byte[]> pdfs = files.stream().map(ConversionController::read).toList();
+            if (level.isPresent() && level.get().requiresTagging()) {
+                // Efter sammanslagningen syns det inte längre vilken fil som saknade taggar.
+                List<String> problems = new ArrayList<>();
+                for (int i = 0; i < files.size(); i++) {
+                    String file = files.get(i).getFileName().toString();
+                    PdfaNormalizer.taggingProblem(pdfs.get(i)).ifPresent(problem -> problems.add(file + ": " + problem));
+                }
+                if (!problems.isEmpty()) {
+                    throw ConversionException.unprocessable(
+                            "Alla filer måste vara taggade för att resultatet ska bli " + level.get().label() + ".", problems);
+                }
+            }
             return respond(request, applyPdfa(List.of(new Output("merged", merger.merge(pdfs), null)), level, strict));
         }
     }

@@ -42,6 +42,17 @@ class PdfaServiceTest {
     }
 
     @Test
+    void partlyTaggedPdfIsRejectedForPdfa1aAlthoughVeraPdfWouldAcceptIt() {
+        // Sammanslagen taggad + otaggad fil: strukturträdet finns, men sida 2 saknar taggar.
+        byte[] merged = new se.fileconverter.pdf.PdfMerger().merge(
+                List.of(TestPdfs.fixture("chromium-tagged.pdf"), TestPdfs.untaggedWithAlphaImage()));
+
+        assertThatThrownBy(() -> service.convert(merged, PdfaLevel.PDFA_1A, null))
+                .isInstanceOfSatisfying(ConversionException.class,
+                        e -> assertThat(e.details()).anyMatch(d -> d.startsWith("Sida 2 saknar taggar")));
+    }
+
+    @Test
     void taggedChromiumPdfBecomesValidPdfa1a() {
         PdfaService.Result result = service.convert(TestPdfs.fixture("chromium-tagged.pdf"), PdfaLevel.PDFA_1A, null);
 
