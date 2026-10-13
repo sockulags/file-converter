@@ -27,8 +27,11 @@ COPY docker/fonts.conf /etc/fonts/conf.d/99-file-converter.conf
 COPY fonts/ /opt/fonts/
 RUN fc-cache -f
 
-RUN useradd --system --uid 1001 --create-home converter
+RUN useradd --system --uid 1001 --create-home converter \
+ && mkdir /data && chown 1001 /data
 USER 1001
+# Uppladdade fonter och alias. Montera en delad volym här i Kubernetes.
+ENV CONVERTER_ASSETS_DIR=/data
 WORKDIR /app
 COPY --from=build /src/target/file-converter-*.jar app.jar
 

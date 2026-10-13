@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.fontbox.cff.CFFCIDFont;
 import org.apache.fontbox.cff.CFFFont;
+import org.apache.fontbox.cff.CFFType1Font;
 import org.apache.fontbox.ttf.TrueTypeFont;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSArray;
@@ -47,6 +48,8 @@ import org.apache.pdfbox.pdmodel.font.PDCIDFontType2;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDFontDescriptor;
 import org.apache.pdfbox.pdmodel.font.PDType0Font;
+import org.apache.pdfbox.pdmodel.font.PDType1CFont;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.PDType3Font;
 import org.apache.pdfbox.pdmodel.graphics.PDXObject;
 import org.apache.pdfbox.pdmodel.graphics.color.PDOutputIntent;
@@ -76,8 +79,8 @@ import se.fileconverter.api.ConversionException;
 /**
  * Gör en befintlig PDF till PDF/A-1 utan att rendera om innehållet.
  *
- * <p>Rättar det som går att rätta mekaniskt (metadata, färgprofil, CIDSet, bilder med alfakanal,
- * otillåtna actions, xref-strömmar) och avvisar det som inte går att rätta utan att ändra hur
+ * <p>Rättar det som går att rätta mekaniskt (metadata, färgprofil, CIDSet, bilder med alfakanal
+ * via {@link TransparentImageFlattener}, otillåtna actions, xref-strömmar) och avvisar det som inte går att rätta utan att ändra hur
  * dokumentet ser ut: kryptering, signaturer, saknade fonter, verklig transparens och, för 1a,
  * avsaknad av taggstruktur. Resultatet ska alltid valideras efteråt.
  */
@@ -92,6 +95,7 @@ public class PdfaNormalizer {
     public byte[] normalize(byte[] pdf, PdfaLevel level) {
         try (PDDocument doc = load(pdf)) {
             rejectUnsupported(doc, level);
+            TransparentImageFlattener.flatten(doc);
             Pass pass = new Pass(doc);
             pass.run();
             pass.rejectIfProblems();
@@ -347,7 +351,8 @@ public class PdfaNormalizer {
         }
 
         /**
-         * Bilder med alfakanal (SMask) läggs mot vit bakgrund. JPEG2000 och 16-bitarsbilder kodas om.
+         * Bilder med alfakanal som {@link TransparentImageFlattener} inte kunde lägga mot sin riktiga
+         * bakgrund läggs mot vitt. JPEG2000 och 16-bitarsbilder kodas om.
          */
         private void fixImage(PDResources resources, COSName name, PDImageXObject image) throws IOException {
             COSStream stream = image.getCOSObject();
@@ -386,7 +391,35 @@ public class PdfaNormalizer {
             }
             if (font instanceof PDType0Font type0) {
                 ensureCidSet(type0.getDescendantFont());
+            } else if (font instanceof PDType1CFont || font instanceof PDType1Font) {
+                ensureCharSet(font);
             }
+        }
+
+        /**
+         * PDF/A-1 kräver CharSet för delmängder av Type 1-fonter. Saknas ofta när en OpenType/CFF-font
+         * bäddats in, t.ex. när LibreOffice valt en sådan som ersättning.
+         */
+        private static void ensureCharSet(PDFont font) throws IOException {
+            PDFontDescriptor descriptor = font.getFontDescriptor();
+            if (descriptor == null || descriptor.getCharSet() != null || !isSubset(font.getName())) {
+                return;
+            }
+            List<String> names = new ArrayList<>();
+            if (font instanceof PDType1CFont cff && cff.getCFFType1Font() != null) {
+                CFFType1Font program = cff.getCFFType1Font();
+                for (int gid = 0; gid < program.getNumCharStrings(); gid++) {
+                    names.add(program.getCharset().getNameForGID(gid));
+                }
+            } else if (font instanceof PDType1Font type1 && type1.getType1Font() != null) {
+                names.addAll(type1.getType1Font().getCharStringsDict().keySet());
+            } else {
+                return;
+            }
+            StringBuilder charSet = new StringBuilder();
+            names.stream().filter(name -> name != null && !name.equals(".notdef")).sorted()
+                    .forEach(name -> charSet.append('/').append(name));
+            descriptor.getCOSObject().setString(COSName.getPDFName("CharSet"), charSet.toString());
         }
 
         /** PDF/A-1 kräver CIDSet för delmängder av CID-fonter. Word och Chromium utelämnar det. */

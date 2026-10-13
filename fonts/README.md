@@ -1,4 +1,7 @@
-# Egna fonter
+# Inbyggda fonter
+
+Det enklaste är att ladda upp fonter i administrationen (`/admin`), som inte kräver en ny image.
+Den här katalogen är för fonter som alltid ska finnas.
 
 TrueType-filer (`.ttf`) här kopieras till `/opt/fonts` i Docker-imagen och blir tillgängliga
 både för LibreOffice och för HTML-mallarna.

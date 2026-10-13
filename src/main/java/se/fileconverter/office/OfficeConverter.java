@@ -1,22 +1,29 @@
 package se.fileconverter.office;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.jodconverter.core.document.DefaultDocumentFormatRegistry;
 import org.jodconverter.core.document.DocumentFormat;
 import org.jodconverter.core.office.OfficeException;
 import org.jodconverter.core.office.OfficeManager;
 import org.jodconverter.local.LocalConverter;
 import org.jodconverter.local.office.LocalOfficeManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import se.fileconverter.api.ConversionException;
+import se.fileconverter.assets.AssetStore;
 import se.fileconverter.config.ConverterProperties;
 
 /**
@@ -26,15 +33,27 @@ import se.fileconverter.config.ConverterProperties;
  * kastar LibreOffice hela taggstrukturen så fort dokumentet innehåller transparens (t.ex. en PNG
  * med alfakanal), och veraPDF upptäcker inte det. {@link se.fileconverter.pdfa.PdfaNormalizer}
  * gör sedan om filen till PDF/A-1 med taggarna kvar.
+ *
+ * <p>LibreOffice läser fonter via fontconfig när processen startar. Processerna startas därför med
+ * en egen fontconfig-fil som tar med de uppladdade fonterna, och poolen startas om när de ändras.
  */
 @Component
 public class OfficeConverter implements InitializingBean, DisposableBean {
 
-    private final ConverterProperties.Office config;
-    private OfficeManager officeManager;
+    private static final Logger log = LoggerFactory.getLogger(OfficeConverter.class);
 
-    public OfficeConverter(ConverterProperties properties) {
+    private final ConverterProperties.Office config;
+    private final List<String> fontDirs;
+    /** Konverteringar delar läslåset; omstart tar skrivlåset och väntar ut pågående jobb. */
+    private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
+    private volatile OfficeManager officeManager;
+    private Path fontconfigFile;
+
+    public OfficeConverter(ConverterProperties properties, AssetStore store) {
         this.config = properties.office();
+        List<String> dirs = new ArrayList<>(properties.fonts().dirs());
+        dirs.add(store.fontsDir().toString());
+        this.fontDirs = List.copyOf(dirs);
     }
 
     @Override
@@ -42,16 +61,8 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         if (!config.enabled()) {
             return;
         }
-        LocalOfficeManager.Builder builder = LocalOfficeManager.builder()
-                .poolSize(config.poolSize())
-                .taskExecutionTimeout(config.taskTimeout().toMillis())
-                .taskQueueTimeout(config.queueTimeout().toMillis())
-                .maxTasksPerProcess(config.maxTasksPerProcess());
-        if (config.home() != null && !config.home().isBlank()) {
-            builder.officeHome(config.home());
-        }
-        officeManager = builder.build();
-        officeManager.start();
+        fontconfigFile = writeFontconfig();
+        officeManager = start();
     }
 
     @Override
@@ -66,15 +77,78 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
     }
 
     public boolean isRunning() {
-        return officeManager != null && officeManager.isRunning();
+        OfficeManager manager = officeManager;
+        return manager != null && manager.isRunning();
+    }
+
+    /** Startar om LibreOffice så att nya eller borttagna fonter syns. Väntar ut pågående konverteringar. */
+    public void restart() {
+        if (!config.enabled()) {
+            return;
+        }
+        lock.writeLock().lock();
+        try {
+            log.info("Startar om LibreOffice för att läsa in ändrade fonter");
+            officeManager.stop();
+            officeManager = start();
+        } catch (OfficeException e) {
+            throw new IllegalStateException("LibreOffice kunde inte startas om", e);
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    private OfficeManager start() throws OfficeException {
+        LocalOfficeManager.Builder builder = LocalOfficeManager.builder()
+                .poolSize(config.poolSize())
+                .taskExecutionTimeout(config.taskTimeout().toMillis())
+                .taskQueueTimeout(config.queueTimeout().toMillis())
+                .maxTasksPerProcess(config.maxTasksPerProcess())
+                // Annars returnerar start() innan processerna är uppe, och hälsokontrollen svarar för tidigt.
+                .startFailFast(true)
+                // JODConverter lägger dessa argument före soffice-kommandot.
+                .runAsArgs("env", "FONTCONFIG_FILE=" + fontconfigFile);
+        if (config.home() != null && !config.home().isBlank()) {
+            builder.officeHome(config.home());
+        }
+        OfficeManager manager = builder.build();
+        manager.start();
+        return manager;
+    }
+
+    /** Systemets fontconfig plus fontkatalogerna, med egen cache eftersom systemets inte är skrivbar. */
+    private Path writeFontconfig() {
+        try {
+            Path dir = Files.createTempDirectory("fontconfig-");
+            StringBuilder xml = new StringBuilder("""
+                    <?xml version="1.0"?>
+                    <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+                    <fontconfig>
+                      <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+                    """);
+            for (String fontDir : fontDirs) {
+                xml.append("  <dir>").append(escape(fontDir)).append("</dir>\n");
+            }
+            xml.append("  <cachedir>").append(escape(dir.resolve("cache").toString())).append("</cachedir>\n");
+            xml.append("</fontconfig>\n");
+            Path file = dir.resolve("fonts.conf");
+            Files.writeString(file, xml);
+            return file;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private static String escape(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /**
-     * @param input    filen, med filändelse som avgör format
-     * @param pdfA     exportera som taggad PDF/A, underlag för PDF/A-1-normaliseringen
+     * @param input filen, med filändelse som avgör format
+     * @param pdfA  exportera som taggad PDF/A, underlag för PDF/A-1-normaliseringen
      */
     public byte[] toPdf(Path input, boolean pdfA) {
-        if (officeManager == null) {
+        if (!config.enabled()) {
             throw new ConversionException(HttpStatus.SERVICE_UNAVAILABLE, "LibreOffice är inte aktiverat i den här instansen.");
         }
         String extension = extension(input);
@@ -88,6 +162,7 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
             filterData.put("UseTaggedPDF", true);
         }
         Path output = input.resolveSibling(input.getFileName() + ".pdf");
+        lock.readLock().lock();
         try {
             LocalConverter.builder()
                     .officeManager(officeManager)
@@ -103,7 +178,9 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
             throw new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT,
                     "LibreOffice kunde inte konvertera '" + input.getFileName() + "'.", List.of(String.valueOf(e.getMessage())), e);
         } catch (IOException e) {
-            throw new IllegalStateException(e);
+            throw new UncheckedIOException(e);
+        } finally {
+            lock.readLock().unlock();
         }
     }
 

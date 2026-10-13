@@ -26,6 +26,13 @@ spec:
             # En LibreOffice-process per samtidig Office-konvertering. Höj tillsammans med minnet.
             - name: CONVERTER_OFFICE_POOL_SIZE
               value: "2"
+            # Aktiverar /admin. Utan hemligheten är administrationen avstängd.
+            - name: CONVERTER_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: file-converter-admin
+                  key: password
+                  optional: true
           resources:
             requests:
               cpu: "1"
@@ -46,7 +53,12 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: assets
+              mountPath: /data
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 2Gi
+        - name: assets
+          persistentVolumeClaim:
+            claimName: file-converter-assets

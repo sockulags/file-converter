@@ -14,7 +14,7 @@ class PdfaServiceTest {
 
     private final PdfaValidator validator = new PdfaValidator();
     private final PdfaService service = new PdfaService(new PdfaNormalizer(), validator,
-            new ConverterProperties(null, new ConverterProperties.Fonts(List.of(), Map.of()), new ConverterProperties.Pdfa(true)));
+            new ConverterProperties(null, new ConverterProperties.Fonts(List.of(), Map.of()), new ConverterProperties.Pdfa(true), null, null));
 
     @Test
     void untaggedPdfBecomesValidPdfa1b() {
@@ -44,6 +44,17 @@ class PdfaServiceTest {
     @Test
     void taggedChromiumPdfBecomesValidPdfa1a() {
         PdfaService.Result result = service.convert(TestPdfs.fixture("chromium-tagged.pdf"), PdfaLevel.PDFA_1A, null);
+
+        assertThat(result.report().violations()).isEmpty();
+    }
+
+    @Test
+    void type1FontSubsetGetsCharSet() {
+        // LibreOffice-PDF med en OpenType/CFF-font (Inter), inbäddad som Type 1 utan CharSet.
+        byte[] input = TestPdfs.fixture("type1-cff-subset.pdf");
+        assertThat(validator.validate(input, PdfaLevel.PDFA_1A).violations()).anyMatch(v -> v.startsWith("6.3.5-2"));
+
+        PdfaService.Result result = service.convert(input, PdfaLevel.PDFA_1A, null);
 
         assertThat(result.report().violations()).isEmpty();
     }

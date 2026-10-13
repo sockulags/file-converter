@@ -7,8 +7,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.ZipEntry;
@@ -18,12 +20,16 @@ import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.documentinterchange.logicalstructure.PDStructureTreeRoot;
+import org.apache.pdfbox.rendering.PDFRenderer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import se.fileconverter.TestPdfs;
 import se.fileconverter.pdfa.PdfaLevel;
@@ -37,6 +43,14 @@ import se.fileconverter.pdfa.PdfaValidator;
 @AutoConfigureMockMvc
 @EnabledIf("libreOfficeInstalled")
 class ConversionControllerTest {
+
+    @TempDir
+    static Path assets;
+
+    @DynamicPropertySource
+    static void properties(DynamicPropertyRegistry registry) {
+        registry.add("converter.assets.dir", () -> assets.toString());
+    }
 
     @Autowired
     MockMvc mvc;
@@ -71,6 +85,18 @@ class ConversionControllerTest {
 
         assertThat(fontNames(pdf)).anyMatch(name -> name.contains("Carlito"));
         assertCompliant(pdf, PdfaLevel.PDFA_1A);
+    }
+
+    @Test
+    void transparentLogoKeepsColouredCellBehindIt() throws Exception {
+        byte[] original = mvc.perform(multipart("/forms/libreoffice/convert").file(file("logga-pa-farg.docx")))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        byte[] pdfa = toPdfa1a("logga-pa-farg.docx");
+
+        assertCompliant(pdfa, PdfaLevel.PDFA_1A);
+        // Vanlig PDF behåller transparensen. PDF/A-versionen ska se likadan ut, inte ha vita hörn.
+        assertThat(differingPixels(original, pdfa)).isLessThan(0.001);
     }
 
     @Test
@@ -192,6 +218,28 @@ class ConversionControllerTest {
                 assertThat(root).isNotNull();
                 assertThat(root.getKids()).as("strukturträdets innehåll").isNotEmpty();
             }
+        }
+    }
+
+    /** Andel pixlar på första sidan som skiljer mer än en nyans mellan två renderingar. */
+    private static double differingPixels(byte[] a, byte[] b) throws IOException {
+        try (PDDocument docA = Loader.loadPDF(a); PDDocument docB = Loader.loadPDF(b)) {
+            BufferedImage imageA = new PDFRenderer(docA).renderImageWithDPI(0, 100);
+            BufferedImage imageB = new PDFRenderer(docB).renderImageWithDPI(0, 100);
+            long differing = 0;
+            for (int y = 0; y < imageA.getHeight(); y++) {
+                for (int x = 0; x < imageA.getWidth(); x++) {
+                    int pa = imageA.getRGB(x, y);
+                    int pb = imageB.getRGB(x, y);
+                    for (int shift = 0; shift <= 16; shift += 8) {
+                        if (Math.abs(((pa >> shift) & 0xff) - ((pb >> shift) & 0xff)) > 24) {
+                            differing++;
+                            break;
+                        }
+                    }
+                }
+            }
+            return (double) differing / ((long) imageA.getWidth() * imageA.getHeight());
         }
     }
 

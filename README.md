@@ -68,11 +68,24 @@ utan att rendera om innehållet:
 | Rättas | Avvisas med förklaring |
 |---|---|
 | XMP-metadata och datum (synkas med Info) | Kryptering och lösenord |
+| CharSet för Type 1-delmängder (OpenType/CFF-fonter) | |
 | Färgprofil (sRGB OutputIntent) | Redan signerade filer (signaturen skulle brytas) |
 | CIDSet för fontdelmängder (saknas i Word/Chromium-PDF) | Fonter som inte är inbäddade |
-| Bilder med alfakanal (läggs mot vit bakgrund), JPEG2000 | Verklig transparens (`opacity`, blandningslägen) |
+| Bilder med alfakanal (läggs mot den bakgrund de ligger på, se nedan), JPEG2000 | Verklig transparens (`opacity`, blandningslägen) |
 | Utskriftsflaggor och actions på annoteringar, JavaScript, bifogade filer | För 1a: avsaknad av taggstruktur |
 | xref-strömmar (PDF/A-1 bygger på PDF 1.4) | |
+
+### Bilder med transparens
+
+PDF/A-1 förbjuder transparens, även i bilder (PNG med alfakanal, logotyper). I stället för att lägga
+bilden mot vitt renderas sidan fram till den punkt där bilden ritas. Utsnittet bakom bilden
+(bakgrundsfärg, toningar, andra bilder, text) blir bildens nya bakgrund, och bilden ersätts med en
+ogenomskinlig version. Resultatet ser likadant ut, och text bakom bilden förblir sökbar.
+
+Används samma bild på flera ställen mot olika bakgrunder, eller inuti en transparensgrupp, läggs den
+mot vitt.
+
+### Taggstruktur
 
 För PDF/A-1a krävs dessutom att strukturträdet har innehåll. **veraPDF godkänner 1a med ett tomt
 strukturträd**, så den kontrollen görs separat.
@@ -83,11 +96,39 @@ Fonterna är en fast lista i imagen, inget installeras eller byts ut i tysthet:
 
 - DejaVu, Liberation (måttkompatibel med Arial, Times New Roman, Courier New),
   Carlito (Calibri) och Caladea (Cambria).
-- Egna `.ttf`-filer läggs i [`fonts/`](fonts/README.md).
+- Egna fonter laddas upp i [administrationen](#administration) och fungerar direkt, utan ny image.
+  Fonter som alltid ska finnas kan också läggas i [`fonts/`](fonts/README.md) och byggas in.
 - OpenType/CFF-fonter är avstängda via fontconfig (`docker/fonts.conf`), eftersom LibreOffice
   bäddar in dem på ett sätt som PDF/A-1 inte godtar.
 - HTML-mallar kan skriva `font-family: Arial` eller `Calibri` och får den måttkompatibla fonten.
-  Alias ställs in under `converter.fonts.aliases`.
+  Inbyggda alias finns under `converter.fonts.aliases`, egna läggs till i administrationen.
+
+## Administration
+
+Ett enkelt webbgränssnitt på `/admin` (användare `admin`, lösenord från `CONVERTER_ADMIN_PASSWORD`).
+Utan lösenord är administrationen avstängd och `/admin` finns inte.
+
+- **Testa fil:** släpp en Word-, Excel-, PowerPoint-, PDF- eller HTML-fil. Den konverteras som via
+  API:t och du ser om den klarar PDF/A-1a/1b och vad som bryts. Du ser också vilka fonter dokumentet
+  begär (installerad, ersätts av alias, saknas) och vilka som hamnade i PDF:en, med förhandsvisning.
+- **Fonter:** ladda upp `.ttf`. Varje font kontrolleras: TrueType, och att licensen (OS/2 fsType)
+  tillåter inbäddning. OpenType/CFF och fontsamlingar avvisas med en förklaring. Fonten blir
+  tillgänglig för både LibreOffice och HTML-mallar, och LibreOffice startas om automatiskt.
+- **Alias:** t.ex. `Garamond → EB Garamond` för fonter ni saknar licens för.
+- **Export och import:** alla uppladdade fonter och alias som en zip, för att flytta mellan miljöer
+  eller som säkerhetskopia. Import ersätter allt, men först efter att hela zip-filen kontrollerats.
+
+Resurserna sparas i `CONVERTER_ASSETS_DIR` (`/data` i imagen). I Kubernetes är det en delad volym
+(`deploy/k8s/pvc.yaml`, ReadWriteMany) som alla poddar läser. Poddar som inte tog emot ändringen
+laddar om inom 30 sekunder. Under en omstart av LibreOffice väntar nya Office-anrop i några sekunder.
+
+API:t bakom sidan (`/admin/api/...`) kan också skriptas. Ändrande anrop kräver huvudet
+`X-Requested-With` som skydd mot CSRF:
+
+```bash
+curl -u admin:$PASS -H 'X-Requested-With: cli' -F files=@MinFont-Regular.ttf http://localhost:3000/admin/api/fonts
+curl -u admin:$PASS -o resurser.zip http://localhost:3000/admin/api/export
+```
 
 ## Skillnader mot Gotenberg
 
@@ -104,7 +145,7 @@ Fonterna är en fast lista i imagen, inget installeras eller byts ut i tysthet:
 - **Godtyckliga PDF:er kan inte bli 1a** om de saknar taggar. Ingen kan göra det tillförlitligt
   automatiskt, men 1b fungerar.
 - **Verklig transparens** (t.ex. halvgenomskinliga former i Word, `opacity` i Chromium-PDF:er)
-  avvisas. Utplattning utan Ghostscript är inte byggd ännu.
+  avvisas. Bilder med alfakanal hanteras (se ovan), men halvgenomskinliga vektorobjekt plattas inte ut.
 - Saknade fonter i kunders PDF:er bäddas inte in i efterhand, utan filen avvisas.
 - Testfilerna är syntetiska. Riktiga kundfiler, särskilt PDF:er från Word, behövs i
   `src/test/resources/fixtures` innan driftsättning.
@@ -122,7 +163,8 @@ Lokalt utan Docker krävs Java 21, LibreOffice och fonterna ovan:
 mvn spring-boot:run
 ```
 
-Kubernetes-manifest finns i `deploy/k8s/` (`kubectl apply -k deploy/k8s`).
+Kubernetes-manifest finns i `deploy/k8s/` (`kubectl apply -k deploy/k8s`). Skapa lösenordet för
+administrationen separat: `kubectl create secret generic file-converter-admin --from-literal=password=...`.
 
 ### Konfiguration
 
@@ -134,6 +176,9 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 | `CONVERTER_OFFICE_TASK_TIMEOUT` | `120s` | |
 | `CONVERTER_OFFICE_MAX_TASKS_PER_PROCESS` | `200` | Processen startas om efter så många jobb |
 | `CONVERTER_PDFA_STRICT` | `true` | `false` = returnera även underkända filer |
+| `CONVERTER_ADMIN_PASSWORD` | tomt | Aktiverar `/admin` |
+| `CONVERTER_ASSETS_DIR` | `/data` (imagen) | Uppladdade fonter och alias |
+| `CONVERTER_ASSETS_POLL_INTERVAL` | `30s` | Hur ofta andra poddars ändringar plockas upp |
 | `SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE` | `100MB` | |
 
 ## Tester
@@ -143,7 +188,8 @@ mvn verify   # kräver LibreOffice och fonterna; integrationstesterna hoppas öv
 ```
 
 Varje PDF/A-svar i integrationstesterna valideras om med veraPDF och kontrolleras för innehåll i
-strukturträdet. Testfilerna skapas med `scripts/make_fixtures.py`.
+strukturträdet. Testfilerna skapas med `scripts/make_fixtures.py` (kräver python-docx, Pillow och
+fonttools). Testfonterna är omdöpta delmängder av DejaVu Sans.
 
 ## Licenser
 

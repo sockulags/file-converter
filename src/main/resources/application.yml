@@ -24,16 +24,23 @@ converter:
     dirs:
       - /usr/share/fonts/truetype
       - /opt/fonts
+    # Hakparenteser behövs för nycklar med mellanslag och bindestreck, annars tar Spring bort dem.
     aliases:
-      sans-serif: Liberation Sans
-      serif: Liberation Serif
-      monospace: Liberation Mono
-      Arial: Liberation Sans
-      Helvetica: Liberation Sans
-      Times New Roman: Liberation Serif
-      Times: Liberation Serif
-      Courier New: Liberation Mono
-      Calibri: Carlito
-      Cambria: Caladea
+      "[sans-serif]": Liberation Sans
+      "[serif]": Liberation Serif
+      "[monospace]": Liberation Mono
+      "[Arial]": Liberation Sans
+      "[Helvetica]": Liberation Sans
+      "[Times New Roman]": Liberation Serif
+      "[Times]": Liberation Serif
+      "[Courier New]": Liberation Mono
+      "[Courier]": Liberation Mono
+      "[Calibri]": Carlito
+      "[Cambria]": Caladea
   pdfa:
     strict: true
+  assets:
+    dir: ./data            # i Docker: /data, i Kubernetes en delad volym (ReadWriteMany)
+    poll-interval: 30s
+  admin:
+    password: ""           # sätt CONVERTER_ADMIN_PASSWORD för att aktivera /admin
