@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
+import se.fileconverter.api.ConcurrencyLimit;
 import se.fileconverter.api.ConversionException;
 import se.fileconverter.api.Workspace;
 import se.fileconverter.assets.AssetReloader;
@@ -28,7 +29,7 @@ import se.fileconverter.html.FontRegistry;
 import se.fileconverter.pdfa.PdfaLevel;
 
 /**
- * API för administrationssidan ({@code /admin}). Skyddas av {@link AdminAuthFilter}.
+ * API för administrationssidan ({@code /admin}). Skyddas av {@link AdminAuthInterceptor}.
  */
 @RestController
 public class AdminController {
@@ -54,6 +55,14 @@ public class AdminController {
     @GetMapping({"/admin", "/admin/"})
     public ResponseEntity<Void> index() {
         return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/admin/index.html")).build();
+    }
+
+    /** Gränssnittet levereras härifrån, inte som statisk resurs, så att samma inloggningskontroll gäller. */
+    @GetMapping("/admin/index.html")
+    public ResponseEntity<byte[]> page() throws IOException {
+        try (var in = AdminController.class.getResourceAsStream("/admin/index.html")) {
+            return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(in.readAllBytes());
+        }
     }
 
     @GetMapping("/admin/api/fonts")
@@ -120,6 +129,7 @@ public class AdminController {
         }
     }
 
+    @ConcurrencyLimit.Limited
     @PostMapping("/admin/api/check")
     public CheckService.Result check(MultipartHttpServletRequest request) {
         PdfaLevel level = PdfaLevel.parse(request.getParameter("pdfa")).orElse(PdfaLevel.PDFA_1A);

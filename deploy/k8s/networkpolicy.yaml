@@ -1,0 +1,13 @@
+# Tjänsten behöver ingen utgående trafik. Spärren är ett andra skydd om ett dokument ändå
+# försöker hämta något via nätverket (länkade bilder, externa data).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: file-converter
+spec:
+  podSelector:
+    matchLabels:
+      app: file-converter
+  policyTypes:
+    - Egress
+  egress: []

@@ -14,7 +14,7 @@ class PdfaServiceTest {
 
     private final PdfaValidator validator = new PdfaValidator();
     private final PdfaService service = new PdfaService(new PdfaNormalizer(), validator,
-            new ConverterProperties(null, new ConverterProperties.Fonts(List.of(), Map.of()), new ConverterProperties.Pdfa(true), null, null));
+            new ConverterProperties(null, new ConverterProperties.Fonts(List.of(), Map.of()), new ConverterProperties.Pdfa(true), null, null, null));
 
     @Test
     void untaggedPdfBecomesValidPdfa1b() {
@@ -57,6 +57,23 @@ class PdfaServiceTest {
         PdfaService.Result result = service.convert(input, PdfaLevel.PDFA_1A, null);
 
         assertThat(result.report().violations()).isEmpty();
+    }
+
+    @Test
+    void hiddenAnnotationsAreRemovedNotRevealed() throws Exception {
+        PdfaService.Result result = service.convert(TestPdfs.withHiddenAnnotation(), PdfaLevel.PDFA_1B, null);
+
+        assertThat(result.report().violations()).isEmpty();
+        try (var doc = org.apache.pdfbox.Loader.loadPDF(result.pdf())) {
+            assertThat(doc.getPage(0).getAnnotations()).extracting(a -> a.getSubtype()).containsExactly("Link");
+        }
+    }
+
+    @Test
+    void hugeImageIsRejectedInsteadOfExhaustingMemory() {
+        assertThatThrownBy(() -> service.convert(TestPdfs.withHugeImage(), PdfaLevel.PDFA_1B, null))
+                .isInstanceOfSatisfying(ConversionException.class,
+                        e -> assertThat(e.details()).anyMatch(d -> d.contains("7000 × 7000")));
     }
 
     @Test

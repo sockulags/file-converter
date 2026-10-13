@@ -77,8 +77,8 @@
 
 <section id="check">
   <div class="panel">
-    <h2>Testa en fil</h2>
-    <p class="hint">Filen konverteras precis som via API:t. Word, Excel, PowerPoint och ODF går via LibreOffice, PDF normaliseras, och HTML-mallar (med bilder och css) renderas som mall.</p>
+    <h2>Testa filer</h2>
+    <p class="hint">Filerna konverteras precis som via API:t. Word, Excel, PowerPoint och ODF går via LibreOffice, PDF normaliseras, och HTML-mallar renderas tillsammans med bilder och css som släpps samtidigt. Flera dokument testas ett i taget och sammanställs i en tabell. Resultatet jämförs också visuellt med samma dokument utan PDF/A-rättningar.</p>
     <div class="drop" id="check-drop"><strong>Släpp filer här</strong> eller klicka för att välja<br><span class="meta" id="check-files">Ingen fil vald</span></div>
     <input type="file" id="check-input" multiple hidden>
     <div class="row">
@@ -89,6 +89,7 @@
       <span class="meta" id="check-status"></span>
     </div>
   </div>
+  <div id="check-batch"></div>
   <div id="check-result"></div>
 </section>
 
@@ -188,21 +189,38 @@ document.querySelectorAll('nav button').forEach(button => button.addEventListene
 // Testa fil
 let checkFiles = [];
 let previewUrl = null;
+let batch = [];
+const routes = {office: 'LibreOffice', html: 'HTML-mall', pdf: 'PDF-normalisering'};
+const isHtml = f => /\.html?$/i.test(f.name);
+// En mall testas tillsammans med sina resurser. Övriga filer testas en i taget.
+const isBatch = files => files.length > 1 && !files.some(isHtml);
+const pct = p => p.toLocaleString('sv-SE', {maximumFractionDigits: 2}) + ' %';
+
 dropZone($('check-drop'), $('check-input'), files => {
   checkFiles = files;
-  $('check-files').textContent = files.map(f => f.name).join(', ') || 'Ingen fil vald';
+  $('check-files').textContent = !files.length ? 'Ingen fil vald'
+      : isBatch(files) ? files.length + ' filer, testas en i taget' : files.map(f => f.name).join(', ');
   $('check-run').disabled = files.length === 0;
 });
 
-$('check-run').addEventListener('click', async () => {
+async function checkOne(files) {
   const form = new FormData();
-  checkFiles.forEach(f => form.append('files', f, f.name));
+  files.forEach(f => form.append('files', f, f.name));
   form.append('pdfa', $('check-level').value);
+  return api('check', {method: 'POST', body: form});
+}
+
+$('check-run').addEventListener('click', async () => {
   $('check-run').disabled = true;
-  $('check-status').textContent = 'Konverterar …';
   try {
-    renderCheck(await api('check', {method: 'POST', body: form}));
-    $('check-status').textContent = '';
+    if (isBatch(checkFiles)) {
+      await runBatch();
+    } else {
+      $('check-batch').innerHTML = '';
+      $('check-status').textContent = 'Konverterar …';
+      renderCheck(await checkOne(checkFiles));
+      $('check-status').textContent = '';
+    }
   } catch (e) {
     $('check-status').textContent = e.message;
   } finally {
@@ -210,10 +228,90 @@ $('check-run').addEventListener('click', async () => {
   }
 });
 
-function renderCheck(r) {
-  const routes = {office: 'LibreOffice', html: 'HTML-mall', pdf: 'PDF-normalisering'};
-  const badge = r.compliant ? '<span class="badge ok">Godkänd</span>'
+async function runBatch() {
+  batch = checkFiles.map(file => ({file, result: null, error: null}));
+  $('check-result').innerHTML = '';
+  renderBatch();
+  for (let i = 0; i < batch.length; i++) {
+    $('check-status').textContent = 'Testar ' + (i + 1) + ' av ' + batch.length + ' …';
+    try {
+      batch[i].result = await checkOne([batch[i].file]);
+    } catch (e) {
+      batch[i].error = e.message;
+    }
+    renderBatch();
+  }
+  const ok = batch.filter(b => b.result && b.result.compliant).length;
+  const failed = batch.filter(b => b.result && !b.result.compliant).length;
+  const errors = batch.filter(b => b.error).length;
+  $('check-status').textContent = ok + ' godkända, ' + failed + ' underkända' + (errors ? ', ' + errors + ' fel' : '') + '.';
+}
+
+function verdictBadge(r) {
+  return r.compliant ? '<span class="badge ok">Godkänd</span>'
       : r.converted ? '<span class="badge bad">Underkänd</span>' : '<span class="badge bad">Avvisad</span>';
+}
+
+function visualBadge(v) {
+  if (!v) return '<span class="badge muted">ingen jämförelse</span>';
+  if (v.pageCountDiffers) return '<span class="badge bad">olika antal sidor</span>';
+  const level = v.differingPercent < 0.5 ? 'ok' : v.differingPercent < 3 ? 'warn' : 'bad';
+  return '<span class="badge ' + level + '">' + pct(v.differingPercent) + '</span>';
+}
+
+function missingFonts(r) {
+  return r.requestedFonts.filter(f => f.status === 'saknas').map(f => f.name);
+}
+
+function renderBatch() {
+  const rows = batch.map((b, i) => {
+    if (!b.result && !b.error) {
+      return '<tr><td>' + esc(b.file.name) + '</td><td colspan="5" class="meta">väntar …</td></tr>';
+    }
+    if (b.error) {
+      return '<tr><td>' + esc(b.file.name) + '</td><td><span class="badge bad">Fel</span></td><td colspan="4">' + esc(b.error) + '</td></tr>';
+    }
+    const r = b.result;
+    const missing = missingFonts(r);
+    return '<tr data-row="' + i + '" style="cursor:pointer" title="Visa detaljer"><td>' + esc(b.file.name) + '</td><td>' + verdictBadge(r) + '</td>'
+      + '<td>' + visualBadge(r.visual) + '</td>'
+      + '<td>' + (missing.length ? '<span class="badge warn">' + missing.length + '</span> ' + esc(missing.slice(0, 3).join(', ')) + (missing.length > 3 ? ' …' : '') : '–') + '</td>'
+      + '<td>' + esc((r.violations[0] || (r.compliant ? '' : r.message)).slice(0, 140)) + (r.violations.length > 1 ? ' <span class="meta">(+' + (r.violations.length - 1) + ')</span>' : '') + '</td>'
+      + '<td>' + r.millis + ' ms</td></tr>';
+  });
+  $('check-batch').innerHTML = '<div class="panel"><div class="row" style="margin-top:0;justify-content:space-between"><h2>Sammanställning</h2>'
+    + '<button class="secondary" id="batch-csv">Ladda ner rapport (CSV)</button></div>'
+    + '<p class="hint">Klicka på en rad för detaljer och förhandsvisning. Visuell avvikelse är andelen pixlar som skiljer mot samma dokument utan PDF/A-rättningar, på den sida som skiljer mest.</p>'
+    + '<table><thead><tr><th>Fil</th><th>Resultat</th><th>Visuell avvikelse</th><th>Saknade fonter</th><th>Problem</th><th>Tid</th></tr></thead><tbody>'
+    + rows.join('') + '</tbody></table></div>';
+  $('batch-csv').addEventListener('click', downloadCsv);
+  document.querySelectorAll('#check-batch tr[data-row]').forEach(row => row.addEventListener('click', () => {
+    renderCheck(batch[row.dataset.row].result);
+    $('check-result').scrollIntoView({behavior: 'smooth'});
+  }));
+}
+
+function downloadCsv() {
+  const cell = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const header = ['fil', 'resultat', 'niva', 'vag', 'visuell_avvikelse_procent', 'sida_med_storst_avvikelse',
+    'saknade_fonter', 'ersatta_fonter', 'problem', 'tid_ms'];
+  const lines = batch.map(b => {
+    if (b.error) return [b.file.name, 'fel', '', '', '', '', '', '', b.error, ''];
+    const r = b.result;
+    return [b.file.name, r.compliant ? 'godkand' : r.converted ? 'underkand' : 'avvisad', r.level, r.route,
+      r.visual ? r.visual.differingPercent.toFixed(2).replace('.', ',') : '', r.visual ? r.visual.worstPage : '',
+      missingFonts(r).join(', '),
+      r.requestedFonts.filter(f => f.status === 'ersätts').map(f => f.name + ' -> ' + f.replacement).join(', '),
+      r.violations.join(' | ') || (r.compliant ? '' : r.message), r.millis];
+  });
+  const csv = '﻿' + [header, ...lines].map(line => line.map(cell).join(';')).join('\r\n');
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv;charset=utf-8'}));
+  link.download = 'pdfa-rapport.csv';
+  link.click();
+}
+
+function renderCheck(r) {
   const violations = r.violations.length
       ? '<ul class="violations">' + r.violations.map(v => '<li>' + esc(v) + '</li>').join('') + '</ul>' : '';
   const statusBadge = { installerad: 'ok', ersätts: 'warn', saknas: 'bad' };
@@ -227,14 +325,19 @@ function renderCheck(r) {
       ? '<table><thead><tr><th>Font i PDF:en</th><th>Typ</th><th>Inbäddad</th></tr></thead><tbody>' + r.outputFonts.map(f =>
           '<tr><td>' + esc(f.name) + '</td><td>' + esc(f.type) + '</td><td>' + (f.embedded ? '<span class="badge ok">ja</span>' : '<span class="badge bad">nej</span>') + '</td></tr>').join('') + '</tbody></table>'
       : '<p class="empty">Inga fonter.</p>';
+  const visual = r.visual
+      ? '<p>Utseende jämfört med originalet: ' + visualBadge(r.visual)
+        + (r.visual.pageCountDiffers ? '' : ' <span class="meta">av sidan avviker på sida ' + r.visual.worstPage
+          + (r.visual.differingPercent >= 0.5 ? '. Jämför förhandsvisningen med originalet.' : '') + '</span>') + '</p>'
+      : '';
 
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   const bytes = Uint8Array.from(atob(r.pdf), c => c.charCodeAt(0));
   previewUrl = URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}));
 
   $('check-result').innerHTML =
-    '<div class="panel"><div class="verdict">' + badge + esc(r.level) + '</div>'
-    + '<div>' + esc(r.message) + '</div>' + violations
+    '<div class="panel"><div class="verdict">' + verdictBadge(r) + esc(r.level) + '</div>'
+    + '<div>' + esc(r.message) + '</div>' + violations + visual
     + '<p class="meta">' + esc(routes[r.route]) + ' · ' + r.pages + (r.pages === 1 ? ' sida · ' : ' sidor · ') + r.millis + ' ms'
     + (r.converted ? '' : ' · förhandsvisningen visar filen före PDF/A-rättningen') + '</p></div>'
     + '<div class="grid"><div class="panel"><h2>Fonter som dokumentet begär</h2>' + requested + '</div>'

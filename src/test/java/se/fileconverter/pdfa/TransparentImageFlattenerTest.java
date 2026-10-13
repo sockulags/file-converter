@@ -33,6 +33,16 @@ class TransparentImageFlattenerTest {
     }
 
     @Test
+    void imageDirectlyOnPageGetsWhiteNotBlack() throws IOException {
+        byte[] input = TestPdfs.alphaImageOnBlankPage();
+        byte[] output = normalizer.normalize(input, PdfaLevel.PDFA_1B);
+
+        assertThat(softMaskImages(output)).isZero();
+        pixel(output, 0, 105, 495).isCloseTo(Color.WHITE);
+        pixel(output, 0, 200, 450).isCloseTo(pixel(input, 0, 200, 450));
+    }
+
+    @Test
     void rotatedImageIsComposedAlongItsOwnAxes() throws IOException {
         byte[] input = TestPdfs.alphaImageOnColor(true);
         byte[] output = normalizer.normalize(input, PdfaLevel.PDFA_1B);

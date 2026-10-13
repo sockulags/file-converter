@@ -18,6 +18,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.pdfbox.Loader;
@@ -54,9 +55,12 @@ public class CheckService {
     public record OutputFont(String name, String type, boolean embedded) {
     }
 
+    /**
+     * @param visual jämförelse med samma dokument utan PDF/A-rättningar, null om den inte gick att göra
+     */
     public record Result(String route, String level, boolean converted, boolean compliant, String message,
             List<String> violations, List<RequestedFont> requestedFonts, List<OutputFont> outputFonts,
-            int pages, long millis, String pdf) {
+            int pages, long millis, VisualComparison.Result visual, String pdf) {
     }
 
     private final OfficeConverter office;
@@ -78,6 +82,8 @@ public class CheckService {
         String route;
         byte[] raw;
         Set<String> requested;
+        // Samma dokument utan PDF/A, som facit för hur resultatet ska se ut.
+        Supplier<byte[]> reference;
         try {
             if (htmlFile.isPresent()) {
                 route = "html";
@@ -87,14 +93,19 @@ public class CheckService {
                 }
                 requested = cssFonts(Files.readString(index, StandardCharsets.UTF_8));
                 raw = html.toPdf(workspace.dir(), Optional.empty(), Optional.of(level));
+                reference = () -> html.toPdf(workspace.dir(), Optional.empty(), Optional.empty());
             } else if (files.size() == 1 && files.getFirst().getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".pdf")) {
                 route = "pdf";
                 requested = Set.of();
                 raw = Files.readAllBytes(files.getFirst());
+                byte[] original = raw;
+                reference = () -> original;
             } else {
                 route = "office";
                 requested = RequestedFonts.find(Files.readAllBytes(files.getFirst()));
                 raw = office.toPdf(files.getFirst(), true);
+                Path document = files.getFirst();
+                reference = () -> office.toPdf(document, false);
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -106,13 +117,20 @@ public class CheckService {
             String message = result.report().compliant()
                     ? "Filen klarar " + level.label() + "."
                     : "Filen klarar inte " + level.label() + "-valideringen.";
+            long millis = elapsed(start);
+            VisualComparison.Result visual;
+            try {
+                visual = VisualComparison.compare(reference.get(), result.pdf());
+            } catch (RuntimeException e) {
+                visual = null;  // Jämförelsen är ett hjälpmedel och får inte fälla kontrollen.
+            }
             return new Result(route, level.label(), true, result.report().compliant(), message,
                     result.report().violations(), requestedFonts, outputFonts(result.pdf()), pages(result.pdf()),
-                    elapsed(start), Base64.getEncoder().encodeToString(result.pdf()));
+                    millis, visual, Base64.getEncoder().encodeToString(result.pdf()));
         } catch (ConversionException e) {
             // Visa det som gick att konvertera, så att man ser vad problemet gäller.
             return new Result(route, level.label(), false, false, e.getMessage(), e.details(), requestedFonts,
-                    outputFonts(raw), pages(raw), elapsed(start), Base64.getEncoder().encodeToString(raw));
+                    outputFonts(raw), pages(raw), elapsed(start), null, Base64.getEncoder().encodeToString(raw));
         }
     }
 

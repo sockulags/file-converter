@@ -7,10 +7,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -67,6 +70,7 @@ public class ConversionController {
                 .body(Map.of("status", up ? "up" : "down", "details", Map.of("libreoffice", libreoffice)));
     }
 
+    @ConcurrencyLimit.Limited
     @PostMapping("/forms/libreoffice/convert")
     public ResponseEntity<byte[]> libreoffice(MultipartHttpServletRequest request) {
         Optional<PdfaLevel> level = PdfaLevel.parse(request.getParameter("pdfa"));
@@ -85,6 +89,7 @@ public class ConversionController {
         }
     }
 
+    @ConcurrencyLimit.Limited
     @PostMapping("/forms/chromium/convert/html")
     public ResponseEntity<byte[]> htmlToPdf(MultipartHttpServletRequest request) {
         Optional<PdfaLevel> level = PdfaLevel.parse(request.getParameter("pdfa"));
@@ -95,6 +100,7 @@ public class ConversionController {
         }
     }
 
+    @ConcurrencyLimit.Limited
     @PostMapping("/forms/pdfengines/convert")
     public ResponseEntity<byte[]> pdfToPdfa(MultipartHttpServletRequest request) {
         PdfaLevel level = PdfaLevel.parse(request.getParameter("pdfa"))
@@ -108,6 +114,7 @@ public class ConversionController {
         }
     }
 
+    @ConcurrencyLimit.Limited
     @PostMapping("/forms/pdfengines/merge")
     public ResponseEntity<byte[]> merge(MultipartHttpServletRequest request) {
         Optional<PdfaLevel> level = PdfaLevel.parse(request.getParameter("pdfa"));
@@ -150,8 +157,14 @@ public class ConversionController {
     private static byte[] zip(List<Output> outputs) {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
+            Set<String> used = new HashSet<>();
             for (Output output : outputs) {
-                zip.putNextEntry(new ZipEntry(output.name() + ".pdf"));
+                // rapport.docx och rapport.odt ger båda rapport.pdf.
+                String name = output.name() + ".pdf";
+                for (int n = 2; !used.add(name.toLowerCase(Locale.ROOT)); n++) {
+                    name = output.name() + " (" + n + ").pdf";
+                }
+                zip.putNextEntry(new ZipEntry(name));
                 zip.write(output.pdf());
                 zip.closeEntry();
             }

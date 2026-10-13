@@ -88,6 +88,8 @@ import se.fileconverter.api.ConversionException;
 public class PdfaNormalizer {
 
     private static final COSName GTS_PDFA1 = COSName.getPDFName("GTS_PDFA1");
+    /** Större bilder än så packas inte upp (4 byte per pixel), så att en enda fil inte kan ta slut på minnet. */
+    public static final long MAX_IMAGE_PIXELS = 40_000_000L;
     private static final Set<String> FORBIDDEN_ANNOTATIONS = Set.of("FileAttachment", "Sound", "Movie", "3D", "Screen", "RichMedia");
     private static final Set<String> FORBIDDEN_ACTIONS = Set.of("Launch", "Sound", "Movie", "ResetForm", "ImportData", "JavaScript");
     private static final int ANNOT_INVISIBLE = 1, ANNOT_HIDDEN = 2, ANNOT_PRINT = 4, ANNOT_NO_VIEW = 32, ANNOT_TOGGLE_NO_VIEW = 256;
@@ -364,6 +366,11 @@ public class PdfaNormalizer {
                 return;
             }
             PDImageXObject replacement = flattenedImages.get(stream);
+            if (replacement == null && (long) image.getWidth() * image.getHeight() > MAX_IMAGE_PIXELS) {
+                throw ConversionException.unprocessable("PDF-filen innehåller en för stor bild.",
+                        List.of("Bilden på sida " + pageNumber + " är " + image.getWidth() + " × " + image.getHeight()
+                                + " pixlar och behöver göras om. Gränsen är " + MAX_IMAGE_PIXELS / 1_000_000 + " megapixel."));
+            }
             if (replacement == null) {
                 BufferedImage source = image.getImage();
                 BufferedImage rgb = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
@@ -495,7 +502,14 @@ public class PdfaNormalizer {
                 }
                 if (!"Popup".equals(subtype)) {
                     int flags = annotation.getAnnotationFlags();
-                    flags = (flags | ANNOT_PRINT) & ~(ANNOT_INVISIBLE | ANNOT_HIDDEN | ANNOT_NO_VIEW | ANNOT_TOGGLE_NO_VIEW);
+                    // PDF/A-1 kräver synliga, utskrivbara annoteringar. Dolt innehåll (dolda fält,
+                    // granskningsanteckningar) tas bort i stället för att plötsligt synas i arkivfilen.
+                    boolean hidden = (flags & (ANNOT_INVISIBLE | ANNOT_HIDDEN)) != 0
+                            || ((flags & ANNOT_NO_VIEW) != 0 && (flags & ANNOT_PRINT) == 0);
+                    if (hidden) {
+                        continue;
+                    }
+                    flags = (flags | ANNOT_PRINT) & ~(ANNOT_NO_VIEW | ANNOT_TOGGLE_NO_VIEW);
                     annotation.setAnnotationFlags(flags);
                 }
                 if (dict.containsKey(COSName.CA)) {

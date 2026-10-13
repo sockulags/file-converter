@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -73,6 +74,10 @@ class ConversionControllerTest {
                 .andReturn().getResponse().getContentAsByteArray();
 
         assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        // PDF/A-versionen ska se ut som en vanlig PDF av samma dokument (logga direkt på vit sida).
+        byte[] plain = mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")))
+                .andReturn().getResponse().getContentAsByteArray();
+        assertThat(differingPixels(plain, pdf)).isLessThan(0.001);
     }
 
     @Test
@@ -186,6 +191,51 @@ class ConversionControllerTest {
             }
         }
         assertThat(names).containsExactly("beslut.pdf", "bilaga.pdf");
+    }
+
+    @Test
+    void documentsCannotPullInLocalFilesOrUrls() throws Exception {
+        Path secret = Files.createTempFile("hemlig", ".png");
+        Files.write(secret, TestPdfs.fixture("alpha.png"));
+        String fodt = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.text">
+                <office:body><office:text><text:p>Lokal fil:<draw:frame draw:name="a" text:anchor-type="as-char" svg:width="2cm" svg:height="2cm"><draw:image xlink:href="%s" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></text:p></office:text></office:body></office:document>
+                """.formatted(secret.toUri());
+
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert")
+                        .file(new MockMultipartFile("files", "lank.fodt", null, fodt.getBytes(java.nio.charset.StandardCharsets.UTF_8))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            assertThat(doc.getPage(0).getResources().getXObjectNames()).as("bilder i PDF:en").isEmpty();
+        }
+    }
+
+    @Test
+    void duplicateFileNamesAreRejectedInsteadOfLosingADocument() throws Exception {
+        mvc.perform(multipart("/forms/pdfengines/merge")
+                        .file(new MockMultipartFile("files", "a.pdf", "application/pdf", TestPdfs.untaggedWithAlphaImage()))
+                        .file(new MockMultipartFile("files", "a.pdf", "application/pdf", TestPdfs.withStandardFont())))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void sameBaseNameGivesUniqueZipEntries() throws Exception {
+        byte[] zip = mvc.perform(multipart("/forms/pdfengines/convert")
+                        .file(new MockMultipartFile("files", "doc.pdf", "application/pdf", TestPdfs.untaggedWithAlphaImage()))
+                        .file(new MockMultipartFile("files", "doc.PDF", "application/pdf", TestPdfs.untaggedWithAlphaImage()))
+                        .param("pdfa", "PDF/A-1b"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        List<String> names = new ArrayList<>();
+        try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(zip))) {
+            for (ZipEntry entry; (entry = in.getNextEntry()) != null; ) {
+                names.add(entry.getName());
+            }
+        }
+        assertThat(names).hasSize(2).doesNotHaveDuplicates();
     }
 
     @Test

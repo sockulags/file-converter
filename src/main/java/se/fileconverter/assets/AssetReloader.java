@@ -45,9 +45,10 @@ public class AssetReloader implements DisposableBean {
             if (current.equals(fingerprint)) {
                 return false;
             }
-            fingerprint = current;
             fonts.reload();
             office.restart();
+            // Först efter lyckad omladdning, så att ett misslyckat försök görs om vid nästa kontroll.
+            fingerprint = current;
             return true;
         } catch (RuntimeException e) {
             log.error("Kunde inte ladda om resurser", e);

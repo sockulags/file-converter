@@ -25,6 +25,7 @@ import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationText;
 import org.apache.pdfbox.util.Matrix;
 
 /**
@@ -83,6 +84,16 @@ public final class TestPdfs {
         });
     }
 
+    /** Bilden direkt på en vit sida, utan något ritat bakom. Det vanligaste fallet: en logga. */
+    public static byte[] alphaImageOnBlankPage() {
+        return build(doc -> {
+            PDImageXObject image = LosslessFactory.createFromImage(doc, ellipse());
+            try (PDPageContentStream cs = new PDPageContentStream(doc, doc.getPage(0))) {
+                cs.drawImage(image, 100, 400, 200, 100);
+            }
+        });
+    }
+
     /** Samma bildobjekt på två sidor med olika bakgrundsfärg. */
     public static byte[] sameAlphaImageOnTwoBackgrounds() {
         return build(doc -> {
@@ -123,6 +134,46 @@ public final class TestPdfs {
             markInfo.setMarked(true);
             doc.getDocumentCatalog().setMarkInfo(markInfo);
             doc.getDocumentCatalog().setStructureTreeRoot(new PDStructureTreeRoot());
+        });
+    }
+
+    /**
+     * En 7000 x 7000 pixlar stor 16-bitarsbild (98 MB uppackad) som bara är några hundra kB komprimerad.
+     * Typexemplet på en fil som skulle ta slut på minnet om bilden packades upp.
+     */
+    public static byte[] withHugeImage() {
+        return build(doc -> {
+            int size = 7000;
+            ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+            try (java.util.zip.DeflaterOutputStream out = new java.util.zip.DeflaterOutputStream(compressed)) {
+                byte[] row = new byte[size * 2];
+                for (int y = 0; y < size; y++) {
+                    out.write(row);
+                }
+            }
+            PDImageXObject image = new PDImageXObject(doc, new java.io.ByteArrayInputStream(compressed.toByteArray()),
+                    org.apache.pdfbox.cos.COSName.FLATE_DECODE, size, size, 16,
+                    org.apache.pdfbox.pdmodel.graphics.color.PDDeviceGray.INSTANCE);
+            try (PDPageContentStream cs = new PDPageContentStream(doc, doc.getPage(0))) {
+                cs.drawImage(image, 72, 72, 400, 400);
+            }
+        });
+    }
+
+    /** En synlig länk och en dold textanteckning (t.ex. en granskningskommentar). */
+    public static byte[] withHiddenAnnotation() {
+        return build(doc -> {
+            try (PDPageContentStream cs = new PDPageContentStream(doc, doc.getPage(0))) {
+                text(cs, PDType0Font.load(doc, FONT), "Dokument med dold kommentar");
+            }
+            PDAnnotationLink link = new PDAnnotationLink();
+            link.setRectangle(new PDRectangle(72, 700, 100, 20));
+            PDAnnotationText note = new PDAnnotationText();
+            note.setRectangle(new PDRectangle(72, 600, 20, 20));
+            note.setContents("Intern kommentar");
+            note.setHidden(true);
+            doc.getPage(0).getAnnotations().add(link);
+            doc.getPage(0).getAnnotations().add(note);
         });
     }
 

@@ -58,7 +58,7 @@ spec:
       volumes:
         - name: tmp
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: 4Gi
         - name: assets
           persistentVolumeClaim:
             claimName: file-converter-assets

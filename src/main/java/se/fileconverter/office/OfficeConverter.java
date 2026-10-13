@@ -48,6 +48,22 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
     private volatile OfficeManager officeManager;
     private Path fontconfigFile;
+    private Path profileDir;
+
+    /**
+     * Användarprofil för LibreOffice. Dokument får inte hämta länkade resurser (bilder via http eller
+     * file:), eftersom det låter en kundfil anropa interna tjänster eller bädda in lokala filer i
+     * PDF:en. Makron är avstängda.
+     */
+    private static final String REGISTRY = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop></item>
+              <item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop></item>
+              <item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item>
+              <item oor:path="/org.openoffice.Office.Common/Misc"><prop oor:name="UseLocking" oor:op="fuse"><value>false</value></prop></item>
+            </oor:items>
+            """;
 
     public OfficeConverter(ConverterProperties properties, AssetStore store) {
         this.config = properties.office();
@@ -62,6 +78,7 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
             return;
         }
         fontconfigFile = writeFontconfig();
+        profileDir = writeProfile();
         officeManager = start();
     }
 
@@ -89,7 +106,11 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         lock.writeLock().lock();
         try {
             log.info("Startar om LibreOffice för att läsa in ändrade fonter");
-            officeManager.stop();
+            try {
+                officeManager.stop();
+            } catch (OfficeException | RuntimeException e) {
+                log.warn("LibreOffice kunde inte stoppas rent: {}", e.getMessage());  // Kan redan vara stoppad efter ett tidigare fel.
+            }
             officeManager = start();
         } catch (OfficeException e) {
             throw new IllegalStateException("LibreOffice kunde inte startas om", e);
@@ -107,7 +128,8 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
                 // Annars returnerar start() innan processerna är uppe, och hälsokontrollen svarar för tidigt.
                 .startFailFast(true)
                 // JODConverter lägger dessa argument före soffice-kommandot.
-                .runAsArgs("env", "FONTCONFIG_FILE=" + fontconfigFile);
+                .runAsArgs("env", "FONTCONFIG_FILE=" + fontconfigFile)
+                .templateProfileDir(profileDir.toFile());
         if (config.home() != null && !config.home().isBlank()) {
             builder.officeHome(config.home());
         }
@@ -134,6 +156,17 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
             Path file = dir.resolve("fonts.conf");
             Files.writeString(file, xml);
             return file;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private static Path writeProfile() {
+        try {
+            Path dir = Files.createTempDirectory("lo-profile-");
+            Path user = Files.createDirectories(dir.resolve("user"));
+            Files.writeString(user.resolve("registrymodifications.xcu"), REGISTRY);
+            return dir;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -166,6 +199,8 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         try {
             LocalConverter.builder()
                     .officeManager(officeManager)
+                    // Uppdatera aldrig länkar (OLE, externa data) vid inläsning.
+                    .loadProperty("UpdateDocMode", (short) 0)
                     .storeProperty("FilterData", filterData)
                     .build()
                     .convert(input.toFile())

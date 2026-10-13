@@ -84,6 +84,18 @@ class AdminControllerTest {
     }
 
     @Test
+    void encodedOrParameterisedPathsCannotBypassPassword() throws Exception {
+        for (String path : new String[] {"/%61dmin/api/aliases", "/admin;x/api/aliases", "/admin/api;x/aliases", "/%61dmin/index.html"}) {
+            mvc.perform(get(path)).andExpect(result ->
+                    assertThat(result.getResponse().getStatus()).as(path).isIn(401, 404, 400));
+        }
+        mvc.perform(put("/%61dmin/api/aliases").header("X-Requested-With", "x")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"Arial\": \"Liberation Serif\"}"))
+                .andExpect(result -> assertThat(result.getResponse().getStatus()).isIn(401, 404, 400));
+        assertThat(store.aliases()).isEmpty();
+    }
+
+    @Test
     void mutatingRequestsRequireCsrfHeader() throws Exception {
         mvc.perform(delete("/admin/api/fonts/x.ttf").header("Authorization", AUTH)).andExpect(status().isForbidden());
     }
@@ -179,6 +191,8 @@ class AdminControllerTest {
                 .andExpect(jsonPath("$.requestedFonts[?(@.name == 'Calibri')].status").value("ersätts"))
                 .andExpect(jsonPath("$.requestedFonts[?(@.name == 'Calibri')].replacement").value("Carlito"))
                 .andExpect(jsonPath("$.outputFonts[?(@.name == 'Carlito-Regular')].embedded").value(true))
+                .andExpect(jsonPath("$.visual.differingPercent").value(org.hamcrest.Matchers.lessThan(0.5)))
+                .andExpect(jsonPath("$.visual.pageCountDiffers").value(false))
                 .andExpect(jsonPath("$.pdf").isNotEmpty());
     }
 
@@ -198,7 +212,21 @@ class AdminControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.compliant").value(true))
                 .andExpect(jsonPath("$.requestedFonts[?(@.name == 'Filkonverter Test')].status").value("installerad"))
-                .andExpect(jsonPath("$.requestedFonts[?(@.name == 'Times New Roman')].replacement").value("Liberation Serif"));
+                // Fonter som bara står i Words fonttabell, utan att användas, ska inte rapporteras som saknade.
+                .andExpect(jsonPath("$.requestedFonts[?(@.name == 'Symbol')]").isEmpty())
+                .andExpect(jsonPath("$.requestedFonts[?(@.status == 'saknas')]").isEmpty());
+    }
+
+    @Test
+    void checkFlagsVisibleChanges() throws Exception {
+        // Samma bild mot två bakgrunder läggs mot vitt på sida 2: godkänd, men synligt ändrad.
+        mvc.perform(admin(multipart("/admin/api/check")
+                        .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.sameAlphaImageOnTwoBackgrounds())))
+                        .param("pdfa", "PDF/A-1b"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.compliant").value(true))
+                .andExpect(jsonPath("$.visual.worstPage").value(2))
+                .andExpect(jsonPath("$.visual.differingPercent").value(org.hamcrest.Matchers.greaterThan(0.5)));
     }
 
     @Test

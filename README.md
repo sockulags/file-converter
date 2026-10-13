@@ -108,9 +108,12 @@ Fonterna är en fast lista i imagen, inget installeras eller byts ut i tysthet:
 Ett enkelt webbgränssnitt på `/admin` (användare `admin`, lösenord från `CONVERTER_ADMIN_PASSWORD`).
 Utan lösenord är administrationen avstängd och `/admin` finns inte.
 
-- **Testa fil:** släpp en Word-, Excel-, PowerPoint-, PDF- eller HTML-fil. Den konverteras som via
-  API:t och du ser om den klarar PDF/A-1a/1b och vad som bryts. Du ser också vilka fonter dokumentet
-  begär (installerad, ersätts av alias, saknas) och vilka som hamnade i PDF:en, med förhandsvisning.
+- **Testa filer:** släpp en eller flera Word-, Excel-, PowerPoint-, PDF- eller HTML-filer. De
+  konverteras som via API:t och du ser om de klarar PDF/A-1a/1b och vad som bryts. Du ser också
+  vilka fonter dokumentet begär (installerad, ersätts av alias, saknas) och vilka som hamnade i PDF:en.
+  **Visuell avvikelse** jämför resultatet sida för sida med samma dokument utan PDF/A-rättningar.
+  PDF/A-godkänt betyder inte att filen ser rätt ut, så kontrollera allt över 0,5 %. Flera filer
+  sammanställs i en tabell som kan laddas ner som CSV.
 - **Fonter:** ladda upp `.ttf`. Varje font kontrolleras: TrueType, och att licensen (OS/2 fsType)
   tillåter inbäddning. OpenType/CFF och fontsamlingar avvisas med en förklaring. Fonten blir
   tillgänglig för både LibreOffice och HTML-mallar, och LibreOffice startas om automatiskt.
@@ -139,6 +142,18 @@ curl -u admin:$PASS -o resurser.zip http://localhost:3000/admin/api/export
 - Mallar kan bara läsa filer som skickats med i anropet. Nätverksanrop och övriga filsystemet är spärrade.
 - Standardformat för HTML är A4 (Gotenberg: Letter) om varken mallen eller fälten anger något.
 - Bara PDF/A-1a och PDF/A-1b. PDF/UA och övriga Gotenberg-fält ignoreras.
+
+## Säkerhet och robusthet
+
+- LibreOffice körs med en profil som blockerar länkade resurser i dokument (bilder via http eller
+  `file:`) och stänger av makron. Annars kan en kundfil få tjänsten att anropa interna adresser
+  eller bädda in lokala filer. `deploy/k8s/networkpolicy.yaml` stänger dessutom all utgående trafik.
+- Bilder över 40 megapixel avvisas med en förklaring i stället för att packas upp.
+- Utplattningen av bilder har ett minnes- och tidstak (10 s per dokument). Över taket läggs
+  bilderna mot vitt.
+- Två uppladdade filer med samma namn avvisas (`400`) i stället för att den ena tyst skriver över den andra.
+- Dolda annoteringar (dolda fält, interna kommentarer) tas bort, eftersom PDF/A-1 annars kräver att de visas.
+- Administrationens inloggning kontrolleras på vilken funktion anropet hamnar i, inte på URL:en.
 
 ## Kända begränsningar
 
@@ -179,6 +194,9 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 | `CONVERTER_ADMIN_PASSWORD` | tomt | Aktiverar `/admin` |
 | `CONVERTER_ASSETS_DIR` | `/data` (imagen) | Uppladdade fonter och alias |
 | `CONVERTER_ASSETS_POLL_INTERVAL` | `30s` | Hur ofta andra poddars ändringar plockas upp |
+| `CONVERTER_LIMITS_MAX_CONCURRENT` | antal processorer | Samtidiga konverteringar per instans. Fler köar |
+| `CONVERTER_LIMITS_QUEUE_TIMEOUT` | `60s` | Därefter `503` med `Retry-After` |
+| `SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE` | `100MB` | |
 | `SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE` | `100MB` | |
 
 ## Tester

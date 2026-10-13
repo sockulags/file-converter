@@ -17,7 +17,6 @@ import java.util.zip.ZipInputStream;
 final class RequestedFonts {
 
     private static final Pattern[] PATTERNS = {
-            Pattern.compile("<w:font\\s+w:name=\"([^\"]+)\""),          // docx fontTable.xml
             Pattern.compile("<w:rFonts[^>]*?\\sw:(?:ascii|hAnsi)=\"([^\"]+)\""), // docx formatmallar och text
             Pattern.compile("<a:latin\\s+typeface=\"([^\"]+)\""),        // pptx/docx-teman
             Pattern.compile("<name\\s+val=\"([^\"]+)\""),                // xlsx styles.xml
@@ -34,7 +33,8 @@ final class RequestedFonts {
         try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(document))) {
             for (ZipEntry entry; (entry = zip.getNextEntry()) != null; ) {
                 String name = entry.getName();
-                boolean relevant = name.endsWith("fontTable.xml") || name.contains("theme/") || name.endsWith("styles.xml")
+                // Inte fontTable.xml: Word listar där även fonter som inte används (t.ex. MS Mincho).
+                boolean relevant = name.contains("theme/") || name.endsWith("styles.xml")
                         || name.equals("word/document.xml")
                         || name.equals("content.xml") || (name.startsWith("ppt/slides/") && name.endsWith(".xml"));
                 if (!relevant) {

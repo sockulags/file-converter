@@ -1,0 +1,20 @@
+# Föreslår uppdateringar av beroenden, bl.a. säkerhetsrättningar i PDFBox, veraPDF och Spring.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      spring:
+        patterns: ["org.springframework*"]
+      pdf:
+        patterns: ["org.apache.pdfbox*", "org.verapdf*", "io.github.openhtmltopdf*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

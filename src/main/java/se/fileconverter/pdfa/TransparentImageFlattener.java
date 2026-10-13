@@ -52,38 +52,55 @@ final class TransparentImageFlattener {
     private static final Logger log = LoggerFactory.getLogger(TransparentImageFlattener.class);
 
     /** Upplösning för bakgrundsrenderingen, med tak för mycket stora sidor. */
-    private static final float DPI = 200f;
+    private static final float DPI = 150f;
     private static final long MAX_CANVAS_PIXELS = 40_000_000L;
+    /** Tak för sparade sammansatta bilder per dokument (4 byte per pixel), så att många bilder inte tar slut på minnet. */
+    private static final long MAX_STORED_PIXELS = 30_000_000L;
+    /** Tidsgräns för hela utplattningen. Överskrids den läggs bilderna mot vitt i stället. */
+    private static final long TIME_BUDGET_NANOS = 10_000_000_000L;
+
+    /** Avbryter renderingen när tidsgränsen passerats. */
+    private static final class OutOfTime extends RuntimeException {
+        OutOfTime() {
+            super(null, null, false, false);
+        }
+    }
 
     private TransparentImageFlattener() {
     }
 
     /** @return antal bilder som ersattes */
     static int flatten(PDDocument doc) throws IOException {
-        Map<COSStream, List<BufferedImage>> composites = new IdentityHashMap<>();
-        Capture capture = new Capture(composites);
+        Capture capture = new Capture();
         PDFRenderer renderer = new PDFRenderer(doc) {
             @Override
             protected PageDrawer createPageDrawer(PageDrawerParameters parameters) throws IOException {
                 return new CapturingDrawer(parameters, capture);
             }
         };
-        for (int i = 0; i < doc.getNumberOfPages(); i++) {
-            PDPage page = doc.getPage(i);
-            if (!hasSoftMaskImage(page.getResources(), Collections.newSetFromMap(new IdentityHashMap<>()))) {
-                continue;
+        renderer.setSubsamplingAllowed(true);
+        capture.deadline = System.nanoTime() + TIME_BUDGET_NANOS;
+        try {
+            for (int i = 0; i < doc.getNumberOfPages(); i++) {
+                PDPage page = doc.getPage(i);
+                if (!hasSoftMaskImage(page.getResources(), Collections.newSetFromMap(new IdentityHashMap<>()))) {
+                    continue;
+                }
+                renderPage(renderer, page, i, capture);
             }
-            renderPage(renderer, page, i, capture);
+        } catch (OutOfTime e) {
+            log.info("Utplattningen av bilder tog för lång tid; bilderna läggs mot vitt");
+            return 0;
         }
 
         int replaced = 0;
-        for (Map.Entry<COSStream, List<BufferedImage>> entry : composites.entrySet()) {
-            List<BufferedImage> versions = entry.getValue();
-            if (versions.stream().allMatch(version -> samePixels(version, versions.getFirst()))) {
-                replaceInPlace(doc, entry.getKey(), versions.getFirst());
+        for (Map.Entry<COSStream, Composite> entry : capture.composites.entrySet()) {
+            Composite composite = entry.getValue();
+            if (composite.image != null) {
+                replaceInPlace(doc, entry.getKey(), composite.image);
                 replaced++;
             } else {
-                log.info("Bild används mot {} olika bakgrunder och läggs mot vitt", versions.size());
+                log.info("Bild används mot olika bakgrunder och läggs mot vitt");
             }
         }
         return replaced;
@@ -103,6 +120,8 @@ final class TransparentImageFlattener {
         BufferedImage canvas = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         Graphics2D graphics = canvas.createGraphics();
         try {
+            // PDFBox rensar ytan med bakgrundsfärgen innan sidan ritas. Den är svart som standard.
+            graphics.setBackground(Color.WHITE);
             graphics.setColor(Color.WHITE);
             graphics.fillRect(0, 0, width, height);
             capture.canvas = canvas;
@@ -115,14 +134,22 @@ final class TransparentImageFlattener {
         }
     }
 
+    /**
+     * Den sammansatta bilden för en bildström. Sparas bara för första placeringen; följande jämförs
+     * direkt och kastas. Skiljer sig någon blir {@code image} null och bilden läggs mot vitt.
+     */
+    private static final class Composite {
+        BufferedImage image;
+        /** Den uppackade bilden med alfakanal, så att den inte packas upp igen vid varje placering. */
+        BufferedImage foreground;
+    }
+
     private static final class Capture {
-        final Map<COSStream, List<BufferedImage>> composites;
+        final Map<COSStream, Composite> composites = new IdentityHashMap<>();
+        long storedPixels;
+        long deadline;
         BufferedImage canvas;
         Graphics2D root;
-
-        Capture(Map<COSStream, List<BufferedImage>> composites) {
-            this.composites = composites;
-        }
     }
 
     private static final class CapturingDrawer extends PageDrawer {
@@ -135,20 +162,45 @@ final class TransparentImageFlattener {
 
         @Override
         public void drawImage(PDImage image) throws IOException {
+            if (System.nanoTime() > capture.deadline) {
+                throw new OutOfTime();
+            }
             // Inuti transparensgrupper ritar PDFBox på en egen yta, där bakgrunden inte är känd.
             if (image instanceof PDImageXObject xobject
                     && xobject.getCOSObject().containsKey(COSName.SMASK)
-                    && getGraphics() == capture.root) {
-                BufferedImage composite = compose(xobject);
-                if (composite != null) {
-                    capture.composites.computeIfAbsent(xobject.getCOSObject(), k -> new ArrayList<>()).add(composite);
-                }
+                    && getGraphics() == capture.root
+                    && (long) xobject.getWidth() * xobject.getHeight() <= PdfaNormalizer.MAX_IMAGE_PIXELS) {
+                capture(xobject);
             }
             super.drawImage(image);
         }
 
-        private BufferedImage compose(PDImageXObject image) throws IOException {
-            BufferedImage foreground = image.getImage();
+        private void capture(PDImageXObject xobject) throws IOException {
+            Composite known = capture.composites.get(xobject.getCOSObject());
+            if (known != null && known.image == null) {
+                return;  // Redan konstaterat att bakgrunderna skiljer.
+            }
+            // Sammansatt bild och uppackad förgrund: två bilder per bildström.
+            long pixels = 2L * xobject.getWidth() * xobject.getHeight();
+            if (known == null && capture.storedPixels + pixels > MAX_STORED_PIXELS) {
+                return;  // Över minnestaket: bilden läggs mot vitt i stället.
+            }
+            BufferedImage foreground = known != null ? known.foreground : xobject.getImage();
+            BufferedImage composite = compose(foreground);
+            if (known == null) {
+                Composite created = new Composite();
+                created.image = composite;
+                created.foreground = foreground;
+                capture.composites.put(xobject.getCOSObject(), created);
+                capture.storedPixels += pixels;
+            } else if (composite == null || !samePixels(known.image, composite)) {
+                known.image = null;
+                known.foreground = null;
+                capture.storedPixels -= pixels;
+            }
+        }
+
+        private BufferedImage compose(BufferedImage foreground) {
             int w = foreground.getWidth();
             int h = foreground.getHeight();
             Matrix ctm = getGraphicsState().getCurrentTransformationMatrix();

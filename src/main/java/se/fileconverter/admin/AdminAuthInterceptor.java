@@ -1,60 +1,66 @@
 package se.fileconverter.admin;
 
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
-import org.springframework.stereotype.Component;
-import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.method.HandlerMethod;
+import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import se.fileconverter.config.ConverterProperties;
 
 /**
- * Skyddar /admin med Basic Auth mot {@code converter.admin.password}. Utan lösenord finns /admin inte.
+ * Skyddar administrationen med Basic Auth mot {@code converter.admin.password}. Utan lösenord finns
+ * administrationen inte.
+ *
+ * <p>Kontrollen görs på vilken controller anropet hamnar i, inte på URL:en. En URL-baserad kontroll
+ * gick att kringgå med {@code /%61dmin/...} eller {@code /admin;x/...}, som Spring ändå skickar
+ * till administrationen. Gränssnittet levereras därför också av {@link AdminController}.
  *
  * <p>Ändrande anrop kräver dessutom huvudet {@code X-Requested-With}, som en annan webbplats inte
  * kan sätta i ett formulär. Det hindrar CSRF mot inloggade webbläsare.
  */
-@Component
-public class AdminAuthFilter extends OncePerRequestFilter {
+@Configuration
+public class AdminAuthInterceptor implements HandlerInterceptor, WebMvcConfigurer {
 
     public static final String CSRF_HEADER = "X-Requested-With";
     private static final String USER = "admin";
 
     private final ConverterProperties.Admin config;
 
-    public AdminAuthFilter(ConverterProperties properties) {
+    public AdminAuthInterceptor(ConverterProperties properties) {
         this.config = properties.admin();
     }
 
     @Override
-    protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getRequestURI().substring(request.getContextPath().length());
-        return !(path.equals("/admin") || path.startsWith("/admin/"));
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(this);
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
-            throws ServletException, IOException {
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        if (!(handler instanceof HandlerMethod method) || method.getBeanType() != AdminController.class) {
+            return true;
+        }
         if (!config.enabled()) {
             response.sendError(HttpServletResponse.SC_NOT_FOUND);
-            return;
+            return false;
         }
         if (!authorized(request.getHeader("Authorization"))) {
             response.setHeader("WWW-Authenticate", "Basic realm=\"file-converter admin\", charset=\"UTF-8\"");
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
-            return;
+            return false;
         }
         boolean mutating = !request.getMethod().equals("GET") && !request.getMethod().equals("HEAD");
         if (mutating && request.getHeader(CSRF_HEADER) == null) {
             response.sendError(HttpServletResponse.SC_FORBIDDEN, "Huvudet " + CSRF_HEADER + " saknas");
-            return;
+            return false;
         }
         response.setHeader("Cache-Control", "no-store");
-        chain.doFilter(request, response);
+        return true;
     }
 
     private boolean authorized(String header) {

@@ -5,3 +5,4 @@ resources:
   - service.yaml
   - hpa.yaml
   - pvc.yaml
+  - networkpolicy.yaml

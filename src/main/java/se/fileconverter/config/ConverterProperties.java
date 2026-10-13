@@ -6,7 +6,7 @@ import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties("converter")
-public record ConverterProperties(Office office, Fonts fonts, Pdfa pdfa, Assets assets, Admin admin) {
+public record ConverterProperties(Office office, Fonts fonts, Pdfa pdfa, Assets assets, Admin admin, Limits limits) {
 
     /**
      * LibreOffice-poolen. Varje process hanterar en konvertering åt gången.
@@ -42,6 +42,13 @@ public record ConverterProperties(Office office, Fonts fonts, Pdfa pdfa, Assets 
      * @param pollInterval hur ofta katalogen kontrolleras efter ändringar från andra poddar
      */
     public record Assets(String dir, Duration pollInterval) {
+    }
+
+    /**
+     * @param maxConcurrent samtidiga konverteringar per instans, 0 = antal processorer
+     * @param queueTimeout  hur länge ett anrop får vänta på en plats innan det får 503
+     */
+    public record Limits(int maxConcurrent, Duration queueTimeout) {
     }
 
     /**
