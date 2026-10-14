@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
 import se.fileconverter.api.ConversionException;
 import se.fileconverter.assets.AssetStore;
 import se.fileconverter.config.ConverterProperties;
+import se.fileconverter.pdfa.PdfaNormalizer;
 
 /**
  * Office-dokument till PDF via en pool av LibreOffice-processer (JODConverter).
@@ -191,11 +192,24 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         if (inputFormat == null) {
             throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_FORMAT, "Filformatet '." + extension + "' stöds inte.");
         }
-        Map<String, Object> filterData = new HashMap<>(options.filterData());
-        if (options.pdfA()) {
-            filterData.put("SelectPdfVersion", 2);
-            filterData.put("UseTaggedPDF", true);
+        if (!options.pdfA()) {
+            return export(input, inputFormat, options, new HashMap<>(options.filterData()));
         }
+        Map<String, Object> filterData = new HashMap<>(options.filterData());
+        filterData.put("SelectPdfVersion", 2);
+        filterData.put("UseTaggedPDF", true);
+        byte[] pdf = export(input, inputFormat, options, filterData);
+        if (PdfaNormalizer.hasTransparency(pdf)) {
+            // PDF/A-1 tillåter ingen transparens. LibreOffice plattar själv ut den i PDF/A-1-läge, men tar
+            // då bort taggarna: resultatet kan bli PDF/A-1b men inte 1a. Bättre än en ogiltig fil.
+            log.info("{} innehåller transparens; exporterar om i PDF/A-1-läge, som plattar ut den", input.getFileName());
+            filterData.put("SelectPdfVersion", 1);
+            pdf = export(input, inputFormat, options, filterData);
+        }
+        return pdf;
+    }
+
+    private byte[] export(Path input, DocumentFormat inputFormat, OfficeOptions options, Map<String, Object> filterData) {
         Path output = input.resolveSibling(input.getFileName() + ".pdf");
         lock.readLock().lock();
         try {

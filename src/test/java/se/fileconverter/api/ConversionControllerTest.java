@@ -80,6 +80,54 @@ class ConversionControllerTest {
         assertThat(differingPixels(plain, pdf)).isLessThan(0.001);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"beslut.doc", "beslut.odt", "presentation.pptx"})
+    void otherOfficeFormatsBecomeTaggedPdfa1a(String fixture) throws Exception {
+        byte[] pdf = toPdfa1a(fixture);
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1A);
+        byte[] plain = mvc.perform(multipart("/forms/libreoffice/convert").file(file(fixture)))
+                .andReturn().getResponse().getContentAsByteArray();
+        assertThat(differingPixels(plain, pdf)).isLessThan(0.001);
+    }
+
+    @Test
+    void slideWithSemiTransparentShapeIsFlattenedToValidPdfa1b() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("presentation-transparens.pptx"))
+                        .param("pdfa", "PDF/A-1b"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Compliant", "true"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1B);
+        byte[] plain = mvc.perform(multipart("/forms/libreoffice/convert").file(file("presentation-transparens.pptx")))
+                .andReturn().getResponse().getContentAsByteArray();
+        assertThat(differingPixels(plain, pdf)).as("utplattningen ska se ut som originalet").isLessThan(0.02);
+    }
+
+    @Test
+    void transparentSlideRequestedAs1aBecomesHonestlyLabelled1b() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("presentation-transparens.pptx"))
+                        .param("pdfa", "PDF/A-1a"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Level", "PDF/A-1b"))
+                .andExpect(header().string("X-Pdfa-Compliant", "false"))
+                .andExpect(header().string("X-Pdfa-Problems", "UNTAGGED"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1B);
+    }
+
+    @Test
+    void spreadsheetBecomesPdfa1b() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("avgifter.xlsx")).param("pdfa", "PDF/A-1b"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Compliant", "true"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_1B);
+    }
+
     @Test
     void calibriIsReplacedByMetricCompatibleCarlito() throws Exception {
         byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert")

@@ -177,6 +177,66 @@ public class PdfaNormalizer {
         return level;
     }
 
+    /**
+     * Om filen innehåller verklig transparens (halvgenomskinliga ytor, mjuka masker, blandningslägen)
+     * som PDF/A-1 inte tillåter. Bilder med alfakanal räknas inte; de plattas ut av normaliseringen.
+     */
+    public static boolean hasTransparency(byte[] pdf) {
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            Set<COSBase> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+            for (PDPage page : doc.getPages()) {
+                if (hasTransparency(page.getResources(), visited)) {
+                    return true;
+                }
+                for (PDAnnotation annotation : page.getAnnotations()) {
+                    PDAppearanceStream appearance = annotation.getNormalAppearanceStream();
+                    if (appearance != null && hasTransparency(appearance.getResources(), visited)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static boolean hasTransparency(PDResources resources, Set<COSBase> visited) throws IOException {
+        if (resources == null || !visited.add(resources.getCOSObject())) {
+            return false;
+        }
+        for (COSName name : resources.getExtGStateNames()) {
+            PDExtendedGraphicsState gs = resources.getExtGState(name);
+            if (gs != null && isTransparent(gs.getCOSObject())) {
+                return true;
+            }
+        }
+        for (COSName name : resources.getXObjectNames()) {
+            if (resources.getXObject(name) instanceof PDFormXObject form && hasTransparency(form.getResources(), visited)) {
+                return true;
+            }
+        }
+        for (COSName name : resources.getPatternNames()) {
+            if (resources.getPattern(name) instanceof PDTilingPattern tiling && hasTransparency(tiling.getResources(), visited)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isTransparent(COSDictionary gs) {
+        boolean alpha = isBelowOne(gs.getDictionaryObject(COSName.CA)) || isBelowOne(gs.getDictionaryObject(COSName.CA_NS));
+        COSBase smask = gs.getDictionaryObject(COSName.SMASK);
+        boolean softMask = smask != null && !COSName.NONE.equals(smask);
+        COSBase bm = gs.getDictionaryObject(COSName.BM);
+        boolean blend = bm instanceof COSName mode && !mode.getName().equals("Normal") && !mode.getName().equals("Compatible");
+        return alpha || softMask || blend;
+    }
+
+    private static boolean isBelowOne(COSBase value) {
+        return value instanceof COSNumber number && number.floatValue() < 1f;
+    }
+
     /** Varför filen inte duger som underlag för PDF/A-1a, eller tomt om den är taggad hela vägen. */
     public static Optional<String> taggingProblem(byte[] pdf) {
         try (PDDocument doc = load(pdf)) {
@@ -495,20 +555,11 @@ public class PdfaNormalizer {
             if (gs == null) {
                 return;
             }
-            COSDictionary dict = gs.getCOSObject();
-            boolean alpha = isBelowOne(dict.getDictionaryObject(COSName.CA)) || isBelowOne(dict.getDictionaryObject(COSName.CA_NS));
-            COSBase smask = dict.getDictionaryObject(COSName.SMASK);
-            boolean softMask = smask != null && !COSName.NONE.equals(smask);
-            COSBase bm = dict.getDictionaryObject(COSName.BM);
-            boolean blend = bm instanceof COSName mode && !mode.getName().equals("Normal") && !mode.getName().equals("Compatible");
-            if (alpha || softMask || blend) {
+            if (isTransparent(gs.getCOSObject())) {
                 transparency.add("på sida " + pageNumber);
             }
         }
 
-        private static boolean isBelowOne(COSBase value) {
-            return value instanceof COSNumber number && number.floatValue() < 1f;
-        }
 
         private static void removeTransparencyGroup(COSDictionary dict) {
             if (dict.getDictionaryObject(COSName.GROUP) instanceof COSDictionary group

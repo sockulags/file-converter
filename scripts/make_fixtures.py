@@ -134,3 +134,71 @@ def staende_liggande(name):
 
 
 staende_liggande("staende-liggande.docx")
+
+
+# Presentationer: en vanlig, och en med halvgenomskinlig form (vanligt i bildspel).
+def presentationer():
+    from pptx import Presentation
+    from pptx.util import Cm as PCm, Pt as PPt
+    from pptx.dml.color import RGBColor
+
+    prs = Presentation()
+    title = prs.slides.add_slide(prs.slide_layouts[0])
+    title.shapes.title.text = "Information om bygglov"
+    title.placeholders[1].text = "Byggnadsnämnden 2026"
+    bullets = prs.slides.add_slide(prs.slide_layouts[1])
+    bullets.shapes.title.text = "Så går det till"
+    body = bullets.placeholders[1].text_frame
+    body.text = "Ansökan lämnas digitalt"
+    for line in ["Handläggning inom tio veckor", "Beslut skickas som PDF/A – åäö"]:
+        body.add_paragraph().text = line
+    bullets.shapes.add_picture(str(OUT / "alpha.png"), PCm(17), PCm(12), width=PCm(6))
+    prs.core_properties.title = "Information om bygglov"
+    prs.save(OUT / "presentation.pptx")
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Bild med halvgenomskinlig form"
+    shape = slide.shapes.add_shape(1, PCm(3), PCm(6), PCm(12), PCm(6))
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = RGBColor(0x1E, 0x5A, 0xC8)
+    srgb = shape.fill._xPr.find(qn("a:solidFill")).find(qn("a:srgbClr"))
+    alpha = srgb.makeelement(qn("a:alpha"), {"val": "50000"})
+    srgb.append(alpha)
+    shape.text_frame.text = "50 % genomskinlig"
+    prs.core_properties.title = "Transparens"
+    prs.save(OUT / "presentation-transparens.pptx")
+
+
+def kalkyl():
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Avgifter"
+    ws.append(["Åtgärd", "Avgift (kr)"])
+    for row in [("Bygglov, enbostadshus", 24000), ("Marklov", 8000), ("Rivningslov", 4500)]:
+        ws.append(row)
+    wb.properties.title = "Avgifter"
+    wb.save(OUT / "avgifter.xlsx")
+
+
+# .doc och .odt: samma beslut som beslut.docx, sparat av LibreOffice.
+def word_format():
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("soffice"):
+        print("soffice saknas: hoppar över .doc/.odt")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        for fmt in ["odt", "doc"]:
+            subprocess.run(["soffice", "--headless", "--convert-to", fmt, "--outdir", tmp, str(OUT / "beslut.docx")],
+                           check=True, capture_output=True)
+            shutil.copy(Path(tmp) / f"beslut.{fmt}", OUT / f"beslut.{fmt}")
+
+
+presentationer()
+kalkyl()
+word_format()
