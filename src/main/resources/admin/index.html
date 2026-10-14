@@ -379,16 +379,17 @@ const reasonText = {
 };
 const outcomeBadge = {ok: 'ok', underkand: 'bad', avvisad: 'warn', fel: 'bad'};
 const outcomeText = {ok: 'godkänd', underkand: 'underkänd', avvisad: 'avvisad', fel: 'fel'};
+const routeText = r => r === 'testbank' ? 'testbänk (admin)' : r;
 
 async function loadStats() {
   const s = await api('stats');
   $('stats-meta').textContent = 'Instans ' + s.instance + ', sedan ' + new Date(s.since).toLocaleString('sv-SE')
     + '. Varje instans räknar för sig; för hela klustret, använd Prometheus. Anrop som fick 503 (full kö): ' + s.busy + '.';
   const ms = v => Math.round(v).toLocaleString('sv-SE') + ' ms';
-  $('stats-routes').innerHTML = s.routes.map(r => '<tr><td>' + esc(r.route) + '</td><td>' + r.count + '</td>'
+  $('stats-routes').innerHTML = s.routes.map(r => '<tr><td>' + esc(routeText(r.route)) + '</td><td>' + r.count + '</td>'
     + ['ok', 'underkand', 'avvisad', 'fel'].map(o => '<td>' + (r.outcomes[o] || 0) + '</td>').join('')
     + '<td>' + ms(r.meanMillis) + '</td><td>' + ms(r.maxMillis) + '</td></tr>').join('')
-    || '<tr><td colspan="8" class="empty">Inga konverteringar ännu.</td></tr>';
+    || '<tr><td colspan="8" class="empty">Inga konverteringar ännu på den här instansen.</td></tr>';
   $('stats-reasons').innerHTML = Object.entries(s.rejections).map(([reason, n]) =>
     '<tr><td>' + esc(reasonText[reason] || reason) + ' <span class="meta">' + esc(reason) + '</span></td><td>' + n + '</td></tr>').join('')
     || '<tr><td class="empty">Inga avvisningar.</td></tr>';
@@ -396,7 +397,7 @@ async function loadStats() {
     '<tr><td>' + esc(rule) + '</td><td>' + n + '</td></tr>').join('')
     || '<tr><td class="empty">Inga brutna regler.</td></tr>';
   $('stats-failures').innerHTML = s.recentFailures.map(f => '<tr><td>' + new Date(f.time).toLocaleString('sv-SE') + '</td>'
-    + '<td>' + esc(f.route) + '</td><td>' + esc(f.files.join(', ')) + '</td>'
+    + '<td>' + esc(routeText(f.route)) + '</td><td>' + esc(f.files.join(', ')) + '</td>'
     + '<td><span class="badge ' + (outcomeBadge[f.outcome] || 'muted') + '">' + esc(outcomeText[f.outcome] || f.outcome) + '</span></td>'
     + '<td>' + esc(reasonText[f.reason] || f.reason || '') + (f.message ? '<br><span class="meta">' + esc(f.message) + '</span>' : '')
     + (f.details.length ? '<ul class="violations">' + f.details.map(d => '<li>' + esc(d) + '</li>').join('') + '</ul>' : '') + '</td>'

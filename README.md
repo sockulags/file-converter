@@ -195,7 +195,10 @@ Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`,
 med spårnings-id. JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`.
 
 Fliken **Statistik** i administrationen visar samma sak för den instans du är inloggad mot, plus de
-100 senaste avvisade eller misslyckade anropen med filnamn, orsak och spårnings-id.
+100 senaste avvisade eller misslyckade anropen med filnamn, orsak och spårnings-id. Körningar i
+testbänken räknas som en egen route, `testbank`. Siffrorna ligger i minnet: de nollställs när podden
+startas om, och med flera repliker ser du bara den pod som svarade. För hela klustret över tid, använd
+Prometheus-måtten ovan.
 
 ## Skillnader mot Gotenberg
 

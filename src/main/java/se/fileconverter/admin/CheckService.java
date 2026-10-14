@@ -56,9 +56,10 @@ public class CheckService {
     }
 
     /**
+     * @param reason orsakskoden när filen avvisades, annars null
      * @param visual jämförelse med samma dokument utan PDF/A-rättningar, null om den inte gick att göra
      */
-    public record Result(String route, String level, boolean converted, boolean compliant, String message,
+    public record Result(String route, String level, boolean converted, boolean compliant, String reason, String message,
             List<String> violations, List<RequestedFont> requestedFonts, List<OutputFont> outputFonts,
             int pages, long millis, VisualComparison.Result visual, String pdf) {
     }
@@ -126,12 +127,12 @@ public class CheckService {
             } catch (RuntimeException e) {
                 visual = null;  // Jämförelsen är ett hjälpmedel och får inte fälla kontrollen.
             }
-            return new Result(route, level.label(), true, result.report().compliant(), message,
+            return new Result(route, level.label(), true, result.report().compliant(), null, message,
                     result.report().violations(), requestedFonts, outputFonts(result.pdf()), pages(result.pdf()),
                     millis, visual, Base64.getEncoder().encodeToString(result.pdf()));
         } catch (ConversionException e) {
             // Visa det som gick att konvertera, så att man ser vad problemet gäller.
-            return new Result(route, level.label(), false, false, e.getMessage(), e.details(), requestedFonts,
+            return new Result(route, level.label(), false, false, e.reason().name(), e.getMessage(), e.details(), requestedFonts,
                     outputFonts(raw), pages(raw), elapsed(start), null, Base64.getEncoder().encodeToString(raw));
         }
     }

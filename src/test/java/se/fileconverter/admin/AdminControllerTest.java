@@ -262,6 +262,20 @@ class AdminControllerTest {
                 .isGreaterThanOrEqualTo(1);
     }
 
+    @Test
+    void checkRunsShowInStatsAsTheirOwnRoute() throws Exception {
+        mvc.perform(admin(multipart("/admin/api/check")
+                        .file(new MockMultipartFile("files", "testbank.pdf", "application/pdf", TestPdfs.withTransparency())))
+                        .param("pdfa", "PDF/A-1b").header("Gotenberg-Trace", "testbank-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.compliant").value(false));
+
+        mvc.perform(get("/admin/api/stats").header("Authorization", AUTH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.routes[?(@.route == 'testbank')].outcomes.underkand").value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.greaterThanOrEqualTo(1))))
+                .andExpect(jsonPath("$.recentFailures[?(@.traceId == 'testbank-1')].route").value(org.hamcrest.Matchers.hasItem("testbank")));
+    }
+
     @Autowired
     io.micrometer.core.instrument.MeterRegistry meters;
 

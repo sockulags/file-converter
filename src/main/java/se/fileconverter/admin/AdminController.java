@@ -26,6 +26,7 @@ import se.fileconverter.assets.AssetReloader;
 import se.fileconverter.assets.AssetStore;
 import se.fileconverter.assets.FontInspector;
 import se.fileconverter.html.FontRegistry;
+import se.fileconverter.observability.ConversionRecord;
 import se.fileconverter.observability.ConversionTelemetry;
 import se.fileconverter.pdfa.PdfaLevel;
 
@@ -144,8 +145,18 @@ public class AdminController {
     @PostMapping("/admin/api/check")
     public CheckService.Result check(MultipartHttpServletRequest request) {
         PdfaLevel level = PdfaLevel.parse(request.getParameter("pdfa")).orElse(PdfaLevel.PDFA_1A);
+        // Testbänken räknas i statistiken som en egen route, skild från klienternas anrop.
+        ConversionRecord record = ConversionRecord.of(request).start("testbank", level.label(),
+                request.getMultiFileMap().values().stream().flatMap(List::stream)
+                        .map(file -> file.getOriginalFilename() + " (" + file.getSize() / 1024 + " kB)").toList());
         try (Workspace workspace = Workspace.from(request)) {
-            return check.check(workspace, level);
+            CheckService.Result result = check.check(workspace, level);
+            if (result.converted()) {
+                record.succeeded(result.compliant(), result.violations());
+            } else {
+                record.rejected(result.reason(), result.message(), result.violations());
+            }
+            return result;
         }
     }
 }
