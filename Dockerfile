@@ -10,7 +10,9 @@ FROM eclipse-temurin:25-jre-noble
 
 # --no-install-recommends håller borta extra fontpaket (bl.a. OpenType/CFF) som LibreOffice
 # annars kan välja som ersättning. Fontlistan nedan är den enda som finns i imagen.
+# upgrade tar in säkerhetsrättningar som kommit efter att basimagen byggdes.
 RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
       libreoffice-writer-nogui \
       libreoffice-calc-nogui \

@@ -24,6 +24,11 @@
     <openhtmltopdf.version>1.1.97</openhtmltopdf.version>
     <jodconverter.version>5.1.0</jodconverter.version>
     <jsoup.version>1.23.2</jsoup.version>
+    <!-- Säkerhetsrättningar före nästa Spring Boot-version (CVE:er i Tomcat och Jackson).
+         Ta bort när spring-boot-starter-parent har minst dessa versioner. -->
+    <tomcat.version>11.0.27</tomcat.version>
+    <jackson-bom.version>3.1.7</jackson-bom.version>
+    <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
   </properties>
 
   <dependencyManagement>
