@@ -152,9 +152,19 @@ class ConversionControllerTest {
     void customerPdfWithTransparencyIsRejectedWithExplanation() throws Exception {
         mvc.perform(multipart("/forms/pdfengines/convert")
                         .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.withTransparency()))
-                        .param("pdfa", "PDF/A-1b"))
+                        .param("pdfa", "PDF/A-1b").param("pdfaStrict", "true"))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.violations[0]").value(org.hamcrest.Matchers.containsString("Transparens")));
+    }
+
+    @Test
+    void bestEffortIsTheDefaultAndReportsWhatIsLeft() throws Exception {
+        mvc.perform(multipart("/forms/pdfengines/convert")
+                        .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.withTransparency()))
+                        .param("pdfa", "PDF/A-1b"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Compliant", "false"))
+                .andExpect(header().string("X-Pdfa-Problems", org.hamcrest.Matchers.containsString("TRANSPARENCY")));
     }
 
     @Test
@@ -261,7 +271,7 @@ class ConversionControllerTest {
         mvc.perform(multipart("/forms/pdfengines/merge")
                         .file(new MockMultipartFile("files", "1-beslut.pdf", "application/pdf", toPdfa1a("beslut.docx")))
                         .file(new MockMultipartFile("files", "2-kundfil.pdf", "application/pdf", TestPdfs.untaggedWithAlphaImage()))
-                        .param("pdfa", "PDF/A-1a"))
+                        .param("pdfa", "PDF/A-1a").param("pdfaStrict", "true"))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.violations[0]").value(org.hamcrest.Matchers.startsWith("2-kundfil.pdf")));
     }
@@ -389,7 +399,7 @@ class ConversionControllerTest {
     void traceIdIsEchoedAndIncludedInErrors() throws Exception {
         mvc.perform(multipart("/forms/pdfengines/convert")
                         .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.withTransparency()))
-                        .param("pdfa", "PDF/A-1b").header("Gotenberg-Trace", "arende-4711"))
+                        .param("pdfa", "PDF/A-1b").param("pdfaStrict", "true").header("Gotenberg-Trace", "arende-4711"))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(header().string("Gotenberg-Trace", "arende-4711"))
                 .andExpect(jsonPath("$.traceId").value("arende-4711"))

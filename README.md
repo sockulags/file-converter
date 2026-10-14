@@ -4,8 +4,18 @@ Konverteringstjänst med samma API som Gotenberg 8 för routerna nedan, men med 
 och PDF/A-1b**. Byggd för att ersätta Gotenberg där fonter, grafik och PDF/A har strulat.
 
 Alla filer som begärs som PDF/A normaliseras och valideras med [veraPDF](https://verapdf.org)
-innan de skickas tillbaka. En fil som inte klarar valideringen ger `422` med en förklaring i
-stället för en trasig PDF.
+innan de skickas tillbaka.
+
+**Två lägen** (`CONVERTER_PDFA_STRICT`, eller per anrop med fältet `pdfaStrict`):
+
+- **Bästa försök** (standard, som Gotenberg): allt som går rättas och filen returneras alltid.
+  Svaret säger ärligt hur det gick: `X-Pdfa-Compliant: true|false`, `X-Pdfa-Level` (nivån filen
+  faktiskt märktes med) och `X-Pdfa-Problems` (veraPDF-regler och egna orsakskoder som återstår).
+  En fil som inte kan bli 1a, för att den saknar taggar, märks som 1b i stället för att påstå något
+  den inte är.
+- **Strikt**: en fil som inte klarar valideringen avvisas med `422` och en förklaring.
+
+Krypterade och redan signerade filer samt jättebilder avvisas i båda lägena.
 
 ## Routes
 
@@ -89,14 +99,17 @@ tabeller, `alt`-texter). `lang` på `<html>` följer med.
 **Befintliga PDF:er** (`pdfengines/convert`, `merge`): normaliseringen i `PdfaNormalizer` rättar
 utan att rendera om innehållet:
 
-| Rättas | Avvisas med förklaring |
+| Rättas | Avvisas i strikt läge (lämnas och rapporteras i bästa försök) |
 |---|---|
 | XMP-metadata och datum (synkas med Info) | Kryptering och lösenord |
 | CharSet för Type 1-delmängder (OpenType/CFF-fonter) | |
+| CIDSet räknas alltid om, eftersom Word m.fl. skriver ofullständiga | |
+| CMYK i en RGB-fil (och tvärtom): `DefaultCMYK` med FOGRA39 anger hur färgerna tolkas, så de behålls | |
+| ICC-profiler i version 4 byts mot version 2, och flera olika utdataprofiler blir en | |
 | Färgprofil (sRGB OutputIntent) | Redan signerade filer (signaturen skulle brytas) |
 | CIDSet för fontdelmängder (saknas i Word/Chromium-PDF) | Fonter som inte är inbäddade |
-| Bilder med alfakanal (läggs mot den bakgrund de ligger på, se nedan), JPEG2000 | Verklig transparens (`opacity`, blandningslägen) |
-| Utskriftsflaggor och actions på annoteringar, JavaScript, bifogade filer | För 1a: avsaknad av taggstruktur |
+| Bilder med alfakanal (läggs mot den bakgrund de ligger på, se nedan), JPEG2000 | Verklig transparens (`opacity`, blandningslägen). Bästa försök: lämnas, och filen märks som ej godkänd |
+| Utskriftsflaggor och actions på annoteringar, JavaScript, bifogade filer | För 1a: avsaknad av taggstruktur (bästa försök: blir 1b) |
 | xref-strömmar (PDF/A-1 bygger på PDF 1.4) | |
 
 ### Bilder med transparens
@@ -234,7 +247,7 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 | `CONVERTER_OFFICE_POOL_SIZE` | `2` | LibreOffice-processer = samtidiga Office-konverteringar |
 | `CONVERTER_OFFICE_TASK_TIMEOUT` | `120s` | |
 | `CONVERTER_OFFICE_MAX_TASKS_PER_PROCESS` | `200` | Processen startas om efter så många jobb |
-| `CONVERTER_PDFA_STRICT` | `true` | `false` = returnera även underkända filer |
+| `CONVERTER_PDFA_STRICT` | `false` | `false` = bästa försök (som Gotenberg), `true` = avvisa med 422 |
 | `CONVERTER_ADMIN_PASSWORD` | tomt | Aktiverar `/admin` |
 | `CONVERTER_ASSETS_DIR` | `/data` (imagen) | Uppladdade fonter och alias |
 | `CONVERTER_ASSETS_POLL_INTERVAL` | `30s` | Hur ofta andra poddars ändringar plockas upp |
@@ -258,3 +271,4 @@ fonttools). Testfonterna är omdöpta delmängder av DejaVu Sans.
 LibreOffice (MPL 2.0), PDFBox (Apache 2.0), veraPDF (MPL 2.0 / GPL 3, dubbellicens),
 openhtmltopdf (LGPL 2.1), jsoup (MIT), JODConverter (Apache 2.0), Spring Boot (Apache 2.0).
 Ingen AGPL. Ghostscript används inte.
+CMYK-profilen `FOGRA39L_coated.icc` kommer från colord och är fri (CC0).

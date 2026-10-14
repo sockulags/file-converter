@@ -116,7 +116,9 @@ public class CheckService {
             PdfaService.Result result = pdfa.convert(raw, level, false);
             String message = result.report().compliant()
                     ? "Filen klarar " + level.label() + "."
-                    : "Filen klarar inte " + level.label() + "-valideringen.";
+                    : result.report().level() != level
+                    ? "Filen kunde inte bli " + level.label() + " och blev " + result.report().level().label() + "."
+                    : "Filen konverterades men klarar inte " + level.label() + "-valideringen.";
             long millis = elapsed(start);
             VisualComparison.Result visual;
             try {

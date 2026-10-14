@@ -97,23 +97,45 @@ public class PdfaNormalizer {
     private static final Set<String> FORBIDDEN_ACTIONS = Set.of("Launch", "Sound", "Movie", "ResetForm", "ImportData", "JavaScript");
     private static final int ANNOT_INVISIBLE = 1, ANNOT_HIDDEN = 2, ANNOT_PRINT = 4, ANNOT_NO_VIEW = 32, ANNOT_TOGGLE_NO_VIEW = 256;
 
+    /**
+     * @param pdf      den normaliserade filen
+     * @param level    nivån filen märktes med; kan vara 1b när 1a begärdes i bästa försök-läge
+     * @param warnings det som inte gick att rätta i bästa försök-läge, med orsakskod först
+     */
+    public record Result(byte[] pdf, PdfaLevel level, List<String> warnings) {
+    }
+
+    /** Strikt: avvisar det som inte kan rättas. */
     public byte[] normalize(byte[] pdf, PdfaLevel level) {
+        return normalize(pdf, level, false).pdf();
+    }
+
+    /**
+     * @param bestEffort som Gotenberg: rätta allt som går och lämna resten, i stället för att avvisa.
+     *                   Krypterade och signerade filer samt för stora bilder avvisas ändå.
+     */
+    public Result normalize(byte[] pdf, PdfaLevel level, boolean bestEffort) {
         try (PDDocument doc = load(pdf)) {
-            rejectUnsupported(doc, level);
+            List<String> warnings = new ArrayList<>();
+            PdfaLevel effective = rejectUnsupported(doc, level, bestEffort, warnings);
             TransparentImageFlattener.flatten(doc);
-            Pass pass = new Pass(doc);
+            int intentComponents = ensureOutputIntent(doc);
+            Pass pass = new Pass(doc, intentComponents);
             pass.run();
-            pass.rejectIfProblems();
+            if (bestEffort) {
+                warnings.addAll(pass.problems());
+            } else {
+                pass.rejectIfProblems();
+            }
 
             removeForbiddenCatalogEntries(doc);
-            ensureOutputIntent(doc);
             ensureDocumentId(doc);
-            writeMetadata(doc, level);
+            writeMetadata(doc, effective);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream(pdf.length);
             // PDF/A-1 bygger på PDF 1.4: inga xref- eller objektströmmar.
             doc.save(out, CompressParameters.NO_COMPRESSION);
-            return out.toByteArray();
+            return new Result(out.toByteArray(), effective, List.copyOf(warnings));
         } catch (IOException e) {
             throw new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT, ConversionException.Reason.UNREADABLE_PDF,
                     "PDF-filen kunde inte bearbetas: " + e.getMessage(), List.of(), e);
@@ -129,7 +151,8 @@ public class PdfaNormalizer {
         }
     }
 
-    private static void rejectUnsupported(PDDocument doc, PdfaLevel level) throws IOException {
+    private static PdfaLevel rejectUnsupported(PDDocument doc, PdfaLevel level, boolean bestEffort, List<String> warnings)
+            throws IOException {
         if (doc.isEncrypted()) {
             throw ConversionException.unprocessable(ConversionException.Reason.ENCRYPTED, "PDF-filen är krypterad.",
                     List.of("PDF/A tillåter inte kryptering. Skicka filen utan behörighetsskydd."));
@@ -139,12 +162,19 @@ public class PdfaNormalizer {
                     List.of("Konvertering skulle bryta signaturen. Konvertera före signering."));
         }
         if (level.requiresTagging()) {
-            taggingProblem(doc).ifPresent(problem -> {
+            Optional<String> problem = taggingProblem(doc);
+            if (problem.isPresent() && bestEffort) {
+                warnings.add("UNTAGGED: " + problem.get() + " Filen blev " + PdfaLevel.PDFA_1B.label() + " i stället för "
+                        + level.label() + ".");
+                return PdfaLevel.PDFA_1B;
+            }
+            if (problem.isPresent()) {
                 throw ConversionException.unprocessable(ConversionException.Reason.UNTAGGED, "PDF-filen saknar taggstruktur och kan inte bli " + level.label() + ".",
-                        List.of(problem, "PDF/A-1a kräver en taggad PDF. Exportera från Word med 'Dokumentstrukturtaggar för"
+                        List.of(problem.get(), "PDF/A-1a kräver en taggad PDF. Exportera från Word med 'Dokumentstrukturtaggar för"
                                 + " tillgänglighet', eller begär PDF/A-1b."));
-            });
+            }
         }
+        return level;
     }
 
     /** Varför filen inte duger som underlag för PDF/A-1a, eller tomt om den är taggad hela vägen. */
@@ -234,13 +264,28 @@ public class PdfaNormalizer {
         }
     }
 
-    private static void ensureOutputIntent(PDDocument doc) throws IOException {
+    /**
+     * Ser till att det finns exakt en PDF/A-1-utdataprofil (PDF/A-1 tillåter inte olika profiler)
+     * med en ICC-profil i version 2, och returnerar profilens antal färgkomponenter.
+     */
+    private static int ensureOutputIntent(PDDocument doc) throws IOException {
         PDDocumentCatalog catalog = doc.getDocumentCatalog();
-        for (PDOutputIntent intent : catalog.getOutputIntents()) {
-            if (GTS_PDFA1.equals(intent.getCOSObject().getCOSName(COSName.S))) {
-                return;
+        List<PDOutputIntent> intents = catalog.getOutputIntents();
+        PDOutputIntent kept = intents.stream()
+                .filter(intent -> GTS_PDFA1.equals(intent.getCOSObject().getCOSName(COSName.S)))
+                .filter(intent -> intent.getCOSObject().getDictionaryObject(COSName.DEST_OUTPUT_PROFILE) instanceof COSStream)
+                .findFirst().orElse(null);
+        if (kept != null) {
+            if (intents.size() > 1) {
+                catalog.setOutputIntents(List.of(kept));
             }
+            COSStream profile = (COSStream) kept.getCOSObject().getDictionaryObject(COSName.DEST_OUTPUT_PROFILE);
+            if (ColorProfiles.tooNew(profile)) {
+                ColorProfiles.downgrade(profile);
+            }
+            return ColorProfiles.components(profile);
         }
+        catalog.setOutputIntents(new ArrayList<>());
         try (InputStream icc = new ByteArrayInputStream(ICC_Profile.getInstance(ColorSpace.CS_sRGB).getData())) {
             PDOutputIntent intent = new PDOutputIntent(doc, icc);
             intent.setInfo("sRGB IEC61966-2.1");
@@ -249,6 +294,7 @@ public class PdfaNormalizer {
             intent.setRegistryName("http://www.color.org");
             catalog.addOutputIntent(intent);
         }
+        return 3;
     }
 
     private static void ensureDocumentId(PDDocument doc) {
@@ -325,10 +371,14 @@ public class PdfaNormalizer {
         private final Map<COSBase, PDImageXObject> flattenedImages = new IdentityHashMap<>();
         private final Set<String> missingFonts = new LinkedHashSet<>();
         private final Set<String> transparency = new LinkedHashSet<>();
+        private final Set<COSBase> checkedProfiles = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final int intentComponents;
+        private COSArray defaultColorSpace;
         private int pageNumber;
 
-        Pass(PDDocument doc) {
+        Pass(PDDocument doc, int intentComponents) {
             this.doc = doc;
+            this.intentComponents = intentComponents;
         }
 
         void run() throws IOException {
@@ -341,9 +391,20 @@ public class PdfaNormalizer {
                 pageNumber++;
                 page.getCOSObject().removeItem(COSName.AA);
                 removeTransparencyGroup(page.getCOSObject());
+                if (page.getResources() == null) {
+                    page.setResources(new PDResources());
+                }
                 visit(page.getResources());
                 fixAnnotations(page);
             }
+        }
+
+        /** Det som inte gick att rätta, med orsakskod först, för bästa försök-läget. */
+        List<String> problems() {
+            List<String> problems = new ArrayList<>();
+            missingFonts.forEach(font -> problems.add("MISSING_FONT: Fonten '" + font + "' är inte inbäddad."));
+            transparency.forEach(where -> problems.add("TRANSPARENCY: Transparens " + where + " (tillåts inte i PDF/A-1)."));
+            return problems;
         }
 
         void rejectIfProblems() {
@@ -360,6 +421,7 @@ public class PdfaNormalizer {
             if (resources == null || !visited.add(resources.getCOSObject())) {
                 return;
             }
+            fixColorSpaces(resources);
             for (COSName name : resources.getExtGStateNames()) {
                 checkExtGState(resources.getExtGState(name));
             }
@@ -378,11 +440,54 @@ public class PdfaNormalizer {
             for (COSName name : resources.getXObjectNames()) {
                 PDXObject xobject = resources.getXObject(name);
                 if (xobject instanceof PDImageXObject image) {
+                    fixIcc(image.getCOSObject().getDictionaryObject(COSName.COLORSPACE));
                     fixImage(resources, name, image);
                 } else if (xobject instanceof PDFormXObject form) {
                     removeTransparencyGroup(form.getCOSObject());
                     visit(form.getResources());
                 }
+            }
+        }
+
+        /**
+         * PDF/A-1 tillåter bara enhetsfärger (DeviceRGB/DeviceCMYK) som stämmer med utdataprofilen,
+         * eller när en standardfärgrymd (DefaultRGB/DefaultCMYK) anger hur de ska tolkas. Lägger till
+         * den som saknas, så att t.ex. CMYK-loggor i en RGB-fil behåller sina färger. Byter också
+         * ICC-profiler i version 4, som PDF/A-1 inte godtar, mot version 2.
+         */
+        private void fixColorSpaces(PDResources resources) throws IOException {
+            COSDictionary dict = resources.getCOSObject();
+            COSDictionary colorSpaces = dict.getCOSDictionary(COSName.COLORSPACE);
+            if (colorSpaces == null) {
+                colorSpaces = new COSDictionary();
+                dict.setItem(COSName.COLORSPACE, colorSpaces);
+            }
+            for (COSName name : colorSpaces.keySet()) {
+                fixIcc(colorSpaces.getDictionaryObject(name));
+            }
+            COSName defaultName = intentComponents == 4 ? COSName.DEFAULT_RGB : COSName.DEFAULT_CMYK;
+            if (intentComponents != 1 && !colorSpaces.containsKey(defaultName)) {
+                if (defaultColorSpace == null) {
+                    defaultColorSpace = intentComponents == 4
+                            ? ColorProfiles.iccBased(doc, ColorProfiles.SRGB, 3)
+                            : ColorProfiles.iccBased(doc, ColorProfiles.CMYK, 4);
+                }
+                colorSpaces.setItem(defaultName, defaultColorSpace);
+            }
+        }
+
+        private void fixIcc(COSBase colorSpace) throws IOException {
+            if (!(colorSpace instanceof COSArray array) || array.size() < 2 || !(array.getObject(0) instanceof COSName family)) {
+                return;
+            }
+            if (COSName.ICCBASED.equals(family) && array.getObject(1) instanceof COSStream profile && checkedProfiles.add(profile)) {
+                if (ColorProfiles.tooNew(profile)) {
+                    ColorProfiles.downgrade(profile);
+                }
+            } else if (COSName.INDEXED.equals(family)) {
+                fixIcc(array.getObject(1));
+            } else if ((COSName.SEPARATION.equals(family) || COSName.DEVICEN.equals(family)) && array.size() > 2) {
+                fixIcc(array.getObject(2));
             }
         }
 
@@ -489,10 +594,14 @@ public class PdfaNormalizer {
             descriptor.getCOSObject().setString(COSName.getPDFName("CharSet"), charSet.toString());
         }
 
-        /** PDF/A-1 kräver CIDSet för delmängder av CID-fonter. Word och Chromium utelämnar det. */
+        /**
+         * PDF/A-1 kräver CIDSet för delmängder av CID-fonter, och att den stämmer med fonten.
+         * Word och Chromium utelämnar den, och andra program skriver ibland en ofullständig, så den
+         * räknas alltid om.
+         */
         private void ensureCidSet(PDCIDFont cidFont) throws IOException {
             PDFontDescriptor descriptor = cidFont.getFontDescriptor();
-            if (descriptor == null || descriptor.getCIDSet() != null || !isSubset(cidFont.getName())) {
+            if (descriptor == null || !isSubset(cidFont.getName())) {
                 return;
             }
             BitSet cids = presentCids(cidFont);

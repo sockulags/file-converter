@@ -235,7 +235,8 @@ class AdminControllerTest {
                         .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.withTransparency())))
                         .param("pdfa", "PDF/A-1b"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.converted").value(false))
+                .andExpect(jsonPath("$.converted").value(true))
+                .andExpect(jsonPath("$.compliant").value(false))
                 .andExpect(jsonPath("$.violations[0]").value(org.hamcrest.Matchers.containsString("Transparens")));
     }
 
@@ -243,7 +244,7 @@ class AdminControllerTest {
     void statsShowConversionsRejectionsAndRecentFailuresWithTraceId() throws Exception {
         mvc.perform(multipart("/forms/pdfengines/convert")
                         .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.withTransparency()))
-                        .param("pdfa", "PDF/A-1b").header("Gotenberg-Trace", "statistik-1"))
+                        .param("pdfa", "PDF/A-1b").param("pdfaStrict", "true").header("Gotenberg-Trace", "statistik-1"))
                 .andExpect(status().isUnprocessableContent());
         mvc.perform(multipart("/forms/pdfengines/convert")
                         .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.untaggedWithAlphaImage()))

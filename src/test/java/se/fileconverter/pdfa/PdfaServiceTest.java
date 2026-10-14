@@ -88,6 +88,67 @@ class PdfaServiceTest {
     }
 
     @Test
+    void cmykContentKeepsItsColoursWithDefaultCmyk() {
+        byte[] input = TestPdfs.withCmyk();
+        PdfaService.Result result = service.convert(input, PdfaLevel.PDFA_1B, null);
+
+        assertThat(result.report().violations()).isEmpty();
+    }
+
+    @Test
+    void iccVersion4ProfilesAreReplaced() {
+        PdfaService.Result result = service.convert(TestPdfs.withIccV4Image(), PdfaLevel.PDFA_1B, null);
+
+        assertThat(result.report().violations()).isEmpty();
+    }
+
+    @Test
+    void incompleteCidSetIsRecomputed() throws Exception {
+        byte[] broken;
+        try (var doc = org.apache.pdfbox.Loader.loadPDF(TestPdfs.fixture("chromium-tagged.pdf"))) {
+            var resources = doc.getPage(0).getResources();
+            for (var name : resources.getFontNames()) {
+                if (resources.getFont(name) instanceof org.apache.pdfbox.pdmodel.font.PDType0Font type0) {
+                    type0.getDescendantFont().getFontDescriptor().setCIDSet(new org.apache.pdfbox.pdmodel.common.PDStream(doc,
+                            new java.io.ByteArrayInputStream(new byte[] {(byte) 0x80})));
+                }
+            }
+            var out = new java.io.ByteArrayOutputStream();
+            doc.save(out);
+            broken = out.toByteArray();
+        }
+
+        PdfaService.Result result = service.convert(broken, PdfaLevel.PDFA_1A, null);
+
+        assertThat(result.report().violations()).isEmpty();
+    }
+
+    @Test
+    void bestEffortReturnsTheFileAndSaysWhatIsLeft() {
+        PdfaService lenient = new PdfaService(new PdfaNormalizer(), validator,
+                new ConverterProperties(null, new ConverterProperties.Fonts(List.of(), Map.of()), new ConverterProperties.Pdfa(false), null, null, null));
+
+        PdfaService.Result result = lenient.convert(TestPdfs.withTransparency(), PdfaLevel.PDFA_1B, null);
+
+        assertThat(result.pdf()).isNotEmpty();
+        assertThat(result.report().compliant()).isFalse();
+        assertThat(result.report().violations()).anyMatch(v -> v.startsWith("TRANSPARENCY: Transparens på sida 1"));
+    }
+
+    @Test
+    void bestEffortLabelsUntaggedFileAs1bInsteadOfClaiming1a() {
+        PdfaService lenient = new PdfaService(new PdfaNormalizer(), validator,
+                new ConverterProperties(null, new ConverterProperties.Fonts(List.of(), Map.of()), new ConverterProperties.Pdfa(false), null, null, null));
+
+        PdfaService.Result result = lenient.convert(TestPdfs.untaggedWithAlphaImage(), PdfaLevel.PDFA_1A, null);
+
+        assertThat(result.report().level()).isEqualTo(PdfaLevel.PDFA_1B);
+        assertThat(result.report().compliant()).as("1a begärdes men blev 1b").isFalse();
+        assertThat(result.report().violations()).singleElement().asString().startsWith("UNTAGGED:");
+        assertThat(validator.validate(result.pdf(), PdfaLevel.PDFA_1B).compliant()).isTrue();
+    }
+
+    @Test
     void realTransparencyIsRejected() {
         assertThatThrownBy(() -> service.convert(TestPdfs.withTransparency(), PdfaLevel.PDFA_1B, null))
                 .isInstanceOfSatisfying(ConversionException.class,

@@ -160,6 +160,48 @@ public final class TestPdfs {
         });
     }
 
+    /**
+     * CMYK-innehåll (fyllning med DeviceCMYK och en CMYK-bild), som i tryckfärdiga loggor.
+     * Med sRGB som utdataprofil bryter det mot PDF/A-1 om ingen DefaultCMYK anges.
+     */
+    public static byte[] withCmyk() {
+        return build(doc -> {
+            try (PDPageContentStream cs = new PDPageContentStream(doc, doc.getPage(0))) {
+                cs.setNonStrokingColor(0.1f, 0.7f, 0f, 0f);
+                cs.addRect(72, 600, 200, 100);
+                cs.fill();
+                byte[] pixels = new byte[40 * 20 * 4];
+                for (int i = 0; i < pixels.length; i += 4) {
+                    pixels[i] = (byte) 255;
+                }
+                PDImageXObject image = new PDImageXObject(doc, new java.io.ByteArrayInputStream(pixels),
+                        org.apache.pdfbox.cos.COSName.FLATE_DECODE, 40, 20, 8,
+                        org.apache.pdfbox.pdmodel.graphics.color.PDDeviceCMYK.INSTANCE);
+                cs.drawImage(image, 72, 400, 80, 40);
+            }
+        });
+    }
+
+    /** En bild med ICC-profil i version 4, som PDF/A-1 inte godtar. */
+    public static byte[] withIccV4Image() {
+        return build(doc -> {
+            byte[] profile = java.awt.color.ICC_Profile.getInstance(java.awt.color.ColorSpace.CS_sRGB).getData().clone();
+            profile[8] = 4;
+            org.apache.pdfbox.pdmodel.common.PDStream stream = new org.apache.pdfbox.pdmodel.common.PDStream(doc,
+                    new java.io.ByteArrayInputStream(profile), org.apache.pdfbox.cos.COSName.FLATE_DECODE);
+            stream.getCOSObject().setInt(org.apache.pdfbox.cos.COSName.N, 3);
+            org.apache.pdfbox.cos.COSArray iccBased = new org.apache.pdfbox.cos.COSArray();
+            iccBased.add(org.apache.pdfbox.cos.COSName.ICCBASED);
+            iccBased.add(stream);
+            PDImageXObject image = new PDImageXObject(doc, new java.io.ByteArrayInputStream(new byte[30 * 10 * 3]),
+                    org.apache.pdfbox.cos.COSName.FLATE_DECODE, 30, 10, 8,
+                    org.apache.pdfbox.pdmodel.graphics.color.PDICCBased.create(iccBased, null));
+            try (PDPageContentStream cs = new PDPageContentStream(doc, doc.getPage(0))) {
+                cs.drawImage(image, 72, 400, 90, 30);
+            }
+        });
+    }
+
     /** Ett ifyllt formulärfält, för att testa plattning (Gotenbergs flatten). */
     public static byte[] withFormField() {
         return build(doc -> {

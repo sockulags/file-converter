@@ -34,7 +34,8 @@ import org.springframework.stereotype.Component;
 public class ConversionTelemetry {
 
     private static final int RECENT_FAILURES = 100;
-    private static final Pattern RULE = Pattern.compile("^(\\d+(?:\\.\\d+)*-\\d+):");
+    /** veraPDF-regel ("6.2.3.3-2: …") eller egen orsakskod från bästa försök-läget ("TRANSPARENCY: …"). */
+    private static final Pattern RULE = Pattern.compile("^(\\d+(?:\\.\\d+)*-\\d+|[A-Z_]+):");
 
     public record Failure(Instant time, String traceId, String route, String pdfa, List<String> files,
             String outcome, String reason, String message, List<String> details) {

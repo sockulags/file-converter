@@ -56,7 +56,9 @@ converter:
       "[Calibri]": Carlito
       "[Cambria]": Caladea
   pdfa:
-    strict: true
+    # false = bästa försök (som Gotenberg): filen returneras även om allt inte gick att rätta,
+    # och X-Pdfa-Compliant/X-Pdfa-Problems säger vad. true = avvisa med 422.
+    strict: false
   assets:
     dir: ./data            # i Docker: /data, i Kubernetes en delad volym (ReadWriteMany)
     poll-interval: 30s

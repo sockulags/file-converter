@@ -148,8 +148,9 @@ public class ConversionController {
         try (Workspace ws = Workspace.from(request)) {
             List<Path> files = ws.files().stream().sorted(ALPHANUMERIC).toList();
             List<byte[]> pdfs = files.stream().map(ConversionController::read).toList();
-            if (level.isPresent() && level.get().requiresTagging()) {
+            if (level.isPresent() && level.get().requiresTagging() && pdfa.isStrict(strict)) {
                 // Efter sammanslagningen syns det inte längre vilken fil som saknade taggar.
+                // I bästa försök-läge blir resultatet i stället 1b, med en varning.
                 List<String> problems = new ArrayList<>();
                 for (int i = 0; i < files.size(); i++) {
                     String file = files.get(i).getFileName().toString();
@@ -198,6 +199,11 @@ public class ConversionController {
         outputs.stream().map(Output::report).filter(Objects::nonNull).findFirst().ifPresent(report -> {
             headers.set("X-Pdfa-Level", report.level().label());
             headers.set("X-Pdfa-Compliant", String.valueOf(outputs.stream().allMatch(o -> o.report().compliant())));
+            String problems = reports.stream().flatMap(r -> r.violations().stream())
+                    .map(ConversionController::problemCode).distinct().collect(java.util.stream.Collectors.joining(","));
+            if (!problems.isEmpty()) {
+                headers.set("X-Pdfa-Problems", problems.length() > 1000 ? problems.substring(0, 1000) : problems);
+            }
         });
         if (outputs.size() == 1) {
             String name = (requestedName != null ? requestedName : outputs.getFirst().name()) + ".pdf";
@@ -209,6 +215,12 @@ public class ConversionController {
         headers.setContentType(MediaType.parseMediaType("application/zip"));
         headers.setContentDisposition(ContentDisposition.attachment().filename(name).build());
         return ResponseEntity.ok().headers(headers).body(zip(outputs));
+    }
+
+    /** "6.2.3.3-2: …" → "6.2.3.3-2", "TRANSPARENCY: …" → "TRANSPARENCY". */
+    private static String problemCode(String problem) {
+        int colon = problem.indexOf(':');
+        return colon > 0 ? problem.substring(0, colon) : problem;
     }
 
     private static byte[] zip(List<Output> outputs) {
