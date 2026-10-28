@@ -4,8 +4,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.ErrorResponse;
@@ -14,6 +20,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 import se.fileconverter.observability.ConversionRecord;
 import se.fileconverter.observability.ConversionTelemetry;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Fel som problem+json (RFC 9457). {@code reason} är en maskinläsbar orsak, {@code violations} listar
@@ -23,6 +30,7 @@ import se.fileconverter.observability.ConversionTelemetry;
 public class ErrorHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ErrorHandler.class);
+    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private final ConversionTelemetry telemetry;
 
@@ -38,7 +46,7 @@ public class ErrorHandler {
             ConversionRecord.of(request).rejected(e.reason().name(), e.getMessage(), e.details());
         }
         if (e.reason() == ConversionException.Reason.BUSY) {
-            telemetry.busy();
+            telemetry.busy(ConversionRecord.of(request).route());
             response.setHeader("Retry-After", "10");
         }
         ProblemDetail problem = problem(e.status(), e.getMessage(), e.reason().name(), request);
@@ -94,6 +102,29 @@ public class ErrorHandler {
         log.error("Oväntat fel i konverteringen", e);
         return problem(HttpStatus.INTERNAL_SERVER_ERROR,
                 "Ett internt fel inträffade. Ange spårnings-id " + record.traceId() + " vid felanmälan.", "INTERNT_FEL", request);
+    }
+
+    /**
+     * Samma svar som {@link #problem}, för fel som uppstår i ett filter innan Spring MVC tar över,
+     * t.ex. när samtidighetsgränsen är nådd.
+     */
+    static void write(HttpServletResponse response, HttpStatusCode status, String detail, String reason,
+            HttpServletRequest request) throws IOException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("type", "about:blank");
+        body.put("title", HttpStatus.valueOf(status.value()).getReasonPhrase());
+        body.put("status", status.value());
+        body.put("detail", detail);
+        body.put("instance", request.getRequestURI());
+        body.put("reason", reason);
+        String traceId = ConversionRecord.of(request).traceId();
+        if (traceId != null) {
+            body.put("traceId", traceId);
+        }
+        response.setStatus(status.value());
+        response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.getWriter().write(JSON.writeValueAsString(body));
     }
 
     private static ProblemDetail problem(HttpStatus status, String detail, String reason, HttpServletRequest request) {

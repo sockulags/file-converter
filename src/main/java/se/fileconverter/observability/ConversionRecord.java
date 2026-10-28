@@ -16,6 +16,9 @@ public final class ConversionRecord {
 
     static final String ATTRIBUTE = ConversionRecord.class.getName();
 
+    record Upload(String name, long size) {
+    }
+
     /** Filändelser som får bli etiketter i mätvärden. Övriga räknas som "annan". */
     private static final Set<String> EXTENSIONS = Set.of("docx", "doc", "docm", "dotx", "odt", "rtf", "txt", "xlsx", "xls",
             "xlsm", "ods", "csv", "pptx", "ppt", "ppsx", "odp", "pdf", "html", "htm", "css", "png", "jpg", "jpeg", "gif",
@@ -24,7 +27,8 @@ public final class ConversionRecord {
     String traceId;
     String route;
     String pdfa = "ingen";
-    List<String> files = List.of();
+    /** Klientens filnamn och storlekar. Hur namnen loggas styrs av {@code converter.logging.file-names}. */
+    List<Upload> uploads = List.of();
     List<String> extensions = List.of();
     Map<String, String> fields = Map.of();
     List<String> notSupported = List.of();
@@ -43,11 +47,16 @@ public final class ConversionRecord {
         return traceId;
     }
 
+    /** Routens namn i mätvärden, eller null om anropet inte är en konvertering. */
+    public String route() {
+        return route;
+    }
+
     /** @param pdfa klientens råa värde. Bara giltiga nivåer blir etiketter, annars blir det "ogiltig". */
     public ConversionRecord start(String route, String pdfa, List<MultipartFile> uploads) {
         this.route = route;
         this.pdfa = pdfaLabel(pdfa);
-        this.files = uploads.stream().map(file -> file.getOriginalFilename() + " (" + file.getSize() / 1024 + " kB)").toList();
+        this.uploads = uploads.stream().map(file -> new Upload(file.getOriginalFilename(), file.getSize())).toList();
         this.extensions = uploads.stream().map(file -> extension(file.getOriginalFilename())).toList();
         return this;
     }

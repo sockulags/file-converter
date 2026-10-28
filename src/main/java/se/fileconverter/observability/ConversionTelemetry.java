@@ -16,7 +16,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import se.fileconverter.config.ConverterProperties;
+import se.fileconverter.config.ConverterProperties.Logging.FileNames;
 
 /**
  * Mätvärden för konverteringar (Prometheus via {@code /actuator/prometheus}) och en sammanställning
@@ -26,8 +29,10 @@ import org.springframework.stereotype.Component;
  *   <li>{@code converter_conversions_total{route,pdfa,outcome}}</li>
  *   <li>{@code converter_rejections_total{reason}}: varför filer avvisas</li>
  *   <li>{@code converter_pdfa_violations_total{rule}}: vilka PDF/A-regler som bryts</li>
- *   <li>{@code converter_conversion_duration_seconds{route,outcome}}</li>
- *   <li>{@code converter_busy_total}: anrop som fick 503 för att instansen var full</li>
+ *   <li>{@code converter_conversion_duration_seconds{route,outcome}}: histogram upp till 5 min</li>
+ *   <li>{@code converter_busy_total{route}}: anrop som fick 503 för att instansen eller LibreOffice var full</li>
+ *   <li>{@code converter_queue_wait_seconds{route}}: hur länge anrop väntade på en plats</li>
+ *   <li>{@code converter_timeouts_total{stage}}: konverteringar som avbröts av en tidsgräns</li>
  *   <li>{@code converter_request_fields_total{route,field,handling}}: vilka fält och Gotenberg-huvuden klienterna skickar</li>
  *   <li>{@code converter_request_files_total{route,extension}}: vilka filtyper klienterna skickar</li>
  *   <li>{@code converter_unknown_routes_total{route,method}}: anrop till Gotenberg-routes som inte finns här</li>
@@ -39,6 +44,9 @@ public class ConversionTelemetry {
     private static final int RECENT_FAILURES = 100;
     /** veraPDF-regel ("6.2.3.3-2: …") eller egen orsakskod från bästa försök-läget ("TRANSPARENCY: …"). */
     private static final Pattern RULE = Pattern.compile("^(\\d+(?:\\.\\d+)*-\\d+|[A-Z_]+):");
+    /** Hinkar i sekunder för konverteringstiden. Office-anrop med kö och omexport kan ta flera minuter. */
+    private static final Duration[] DURATION_SLOS = seconds(1, 5, 15, 30, 60, 120, 180, 240);
+    private static final Duration[] QUEUE_SLOS = seconds(0.1, 1, 5, 15, 30, 60);
 
     public record Failure(Instant time, String traceId, String route, String pdfa, List<String> files,
             String outcome, String reason, String message, List<String> details) {
@@ -58,13 +66,21 @@ public class ConversionTelemetry {
     private final Map<String, AtomicLong> rules = new ConcurrentHashMap<>();
     private final Map<String, Timer> timers = new ConcurrentHashMap<>();
     private final Deque<Failure> recent = new ArrayDeque<>();
-    private final Counter busy;
+    private final AtomicLong busy = new AtomicLong();
+    private final FileNames fileNames;
 
     public ConversionTelemetry(MeterRegistry registry) {
+        this(registry, FileNames.EXTENSION);
+    }
+
+    @Autowired
+    public ConversionTelemetry(MeterRegistry registry, ConverterProperties properties) {
+        this(registry, properties.fileNames());
+    }
+
+    public ConversionTelemetry(MeterRegistry registry, FileNames fileNames) {
         this.registry = registry;
-        this.busy = Counter.builder("converter.busy")
-                .description("Anrop som fick 503 eftersom instansen redan körde maximalt antal konverteringar")
-                .register(registry);
+        this.fileNames = fileNames;
     }
 
     void record(ConversionRecord record, Duration duration) {
@@ -73,6 +89,8 @@ public class ConversionTelemetry {
         timers.computeIfAbsent(record.route + "|" + outcome, key -> Timer.builder("converter.conversion.duration")
                         .tags("route", record.route, "outcome", outcome)
                         .publishPercentileHistogram()
+                        .maximumExpectedValue(Duration.ofMinutes(5))
+                        .serviceLevelObjectives(DURATION_SLOS)
                         .register(registry))
                 .record(duration);
         outcomes.computeIfAbsent(record.route, key -> new ConcurrentHashMap<>())
@@ -97,8 +115,9 @@ public class ConversionTelemetry {
         }
         if (!outcome.equals("ok")) {
             synchronized (recent) {
-                recent.addFirst(new Failure(Instant.now(), record.traceId, record.route, record.pdfa, record.files,
-                        outcome, record.reason, record.message, record.details.stream().limit(5).toList()));
+                recent.addFirst(new Failure(Instant.now(), record.traceId, record.route, record.pdfa, files(record),
+                        outcome, record.reason, mask(record, record.message),
+                        record.details.stream().limit(5).map(detail -> mask(record, detail)).toList()));
                 while (recent.size() > RECENT_FAILURES) {
                     recent.removeLast();
                 }
@@ -111,8 +130,46 @@ public class ConversionTelemetry {
         registry.counter("converter.unknown.routes", "route", route, "method", method).increment();
     }
 
-    public void busy() {
-        busy.increment();
+    /** @param route routens namn, eller null om anropet inte hunnit registreras */
+    public void busy(String route) {
+        busy.incrementAndGet();
+        Counter.builder("converter.busy")
+                .description("Anrop som fick 503 eftersom instansen eller LibreOffice redan körde maximalt antal konverteringar")
+                .tag("route", route == null ? "okand" : route)
+                .register(registry).increment();
+    }
+
+    /** Hur länge ett anrop väntade på en plats i samtidighetsgränsen, även om det sedan fick 503. */
+    public void queueWait(String route, Duration wait) {
+        Timer.builder("converter.queue.wait")
+                .description("Väntan på en plats i samtidighetsgränsen")
+                .tag("route", route)
+                .serviceLevelObjectives(QUEUE_SLOS)
+                .register(registry).record(wait);
+    }
+
+    /** En konvertering som avbröts av en tidsgräns. */
+    public void timeout(String stage) {
+        registry.counter("converter.timeouts", "stage", stage).increment();
+    }
+
+    /** Filerna i anropet för loggraden, med namnen som {@code converter.logging.file-names} anger. */
+    public List<String> files(ConversionRecord record) {
+        return record.uploads.stream()
+                .map(upload -> fileNames.describe(upload.name()) + " (" + upload.size() / 1024 + " kB)").toList();
+    }
+
+    /** Byter ut klientens filnamn i ett felmeddelande, så att administrationen följer samma inställning som loggen. */
+    private String mask(ConversionRecord record, String text) {
+        if (text == null || fileNames == FileNames.FULL) {
+            return text;
+        }
+        for (ConversionRecord.Upload upload : record.uploads) {
+            if (upload.name() != null && !upload.name().isEmpty()) {
+                text = text.replace(upload.name(), fileNames.describe(upload.name()));
+            }
+        }
+        return text;
     }
 
     /** Sammanställning för den här instansen sedan start. */
@@ -138,7 +195,7 @@ public class ConversionTelemetry {
             failures = List.copyOf(recent);
         }
         return new Stats(instanceName(), since, routes, sorted(rejections), top(sorted(rules), 15),
-                (long) busy.count(), failures);
+                busy.get(), failures);
     }
 
     private static Map<String, Long> sorted(Map<String, AtomicLong> counts) {
@@ -153,6 +210,10 @@ public class ConversionTelemetry {
         Map<String, Long> result = new LinkedHashMap<>();
         counts.entrySet().stream().limit(limit).forEach(entry -> result.put(entry.getKey(), entry.getValue()));
         return result;
+    }
+
+    private static Duration[] seconds(double... values) {
+        return java.util.Arrays.stream(values).mapToObj(value -> Duration.ofMillis((long) (value * 1000))).toArray(Duration[]::new);
     }
 
     private static String instanceName() {

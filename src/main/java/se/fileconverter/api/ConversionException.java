@@ -28,6 +28,7 @@ public class ConversionException extends RuntimeException {
         LIBREOFFICE_TIMEOUT,
         LIBREOFFICE_CRASHED,
         BUSY,
+        TIMEOUT,
         MERGE_FAILED,
         UNAVAILABLE,
         UNSUPPORTED_ROUTE

@@ -58,10 +58,12 @@ public class ConversionController {
     private final PdfMerger merger;
     private final PdfaService pdfa;
     private final PdfPostProcessor postProcessor;
+    private final Timeouts timeouts;
 
     public ConversionController(OfficeConverter office, HtmlConverter html, PdfMerger merger, PdfaService pdfa,
-            PdfPostProcessor postProcessor) {
+            PdfPostProcessor postProcessor, Timeouts timeouts) {
         this.postProcessor = postProcessor;
+        this.timeouts = timeouts;
         this.office = office;
         this.html = html;
         this.merger = merger;
@@ -117,9 +119,10 @@ public class ConversionController {
         try (Workspace ws = Workspace.from(request)) {
             HtmlConverter.Options htmlOptions = new HtmlConverter.Options(pageCss(request, options.bool("preferCssPageSize", false)),
                     options.bool("printBackground", false), options.bool("generateDocumentOutline", false));
-            byte[] pdf = html.toPdf(ws.dir(), htmlOptions, level);
+            byte[] pdf = timeouts.supply(Timeouts.Stage.HTML, () -> html.toPdf(ws.dir(), htmlOptions, level));
             if (ranges != null) {
-                pdf = postProcessor.selectPages(pdf, ranges);
+                byte[] rendered = pdf;
+                pdf = timeouts.supply(Timeouts.Stage.POST_PROCESS, () -> postProcessor.selectPages(rendered, ranges));
             }
             return respond(request, options, finish(List.of(new Output("index", pdf, null)), options, level, strict));
         }
@@ -173,11 +176,11 @@ public class ConversionController {
         Map<String, Object> metadata = options.metadata();
         boolean flatten = options.flatten();
         return outputs.stream().map(output -> {
-            byte[] pdf = postProcessor.apply(output.pdf(), metadata, flatten);
+            byte[] pdf = timeouts.supply(Timeouts.Stage.POST_PROCESS, () -> postProcessor.apply(output.pdf(), metadata, flatten));
             if (level.isEmpty()) {
                 return new Output(output.name(), pdf, null);
             }
-            PdfaService.Result result = pdfa.convert(pdf, level.get(), strict);
+            PdfaService.Result result = timeouts.supply(Timeouts.Stage.PDFA, () -> pdfa.convert(pdf, level.get(), strict));
             return new Output(output.name(), result.pdf(), result.report());
         }).toList();
     }
