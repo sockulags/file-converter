@@ -28,6 +28,9 @@ import org.springframework.stereotype.Component;
  *   <li>{@code converter_pdfa_violations_total{rule}}: vilka PDF/A-regler som bryts</li>
  *   <li>{@code converter_conversion_duration_seconds{route,outcome}}</li>
  *   <li>{@code converter_busy_total}: anrop som fick 503 för att instansen var full</li>
+ *   <li>{@code converter_request_fields_total{route,field,handling}}: vilka fält och Gotenberg-huvuden klienterna skickar</li>
+ *   <li>{@code converter_request_files_total{route,extension}}: vilka filtyper klienterna skickar</li>
+ *   <li>{@code converter_unknown_routes_total{route,method}}: anrop till Gotenberg-routes som inte finns här</li>
  * </ul>
  */
 @Component
@@ -75,6 +78,11 @@ public class ConversionTelemetry {
         outcomes.computeIfAbsent(record.route, key -> new ConcurrentHashMap<>())
                 .computeIfAbsent(outcome, key -> new AtomicLong()).incrementAndGet();
 
+        record.fields.forEach((field, handling) -> registry.counter("converter.request.fields",
+                "route", record.route, "field", field, "handling", handling).increment());
+        for (String extension : record.extensions) {
+            registry.counter("converter.request.files", "route", record.route, "extension", extension).increment();
+        }
         if (record.reason != null) {
             registry.counter("converter.rejections", "reason", record.reason).increment();
             rejections.computeIfAbsent(record.reason, key -> new AtomicLong()).incrementAndGet();
@@ -96,6 +104,11 @@ public class ConversionTelemetry {
                 }
             }
         }
+    }
+
+    /** Anrop till en Gotenberg-route som inte finns här. */
+    public void unknownRoute(String route, String method) {
+        registry.counter("converter.unknown.routes", "route", route, "method", method).increment();
     }
 
     public void busy() {

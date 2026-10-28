@@ -26,7 +26,8 @@ public class ConversionException extends RuntimeException {
         UNREADABLE_PDF,
         LIBREOFFICE_FAILED,
         MERGE_FAILED,
-        UNAVAILABLE
+        UNAVAILABLE,
+        UNSUPPORTED_ROUTE
     }
 
     private final HttpStatus status;
