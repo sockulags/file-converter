@@ -50,8 +50,12 @@ jobs:
           grep -i "x-pdfa-compliant: true" mall.txt
       - name: tini är PID 1 och inga zombieprocesser finns
         run: |
-          docker exec fc ps -eo pid,stat,comm
+          docker exec fc ps -eo pid,ppid,stat,comm
           test "$(docker exec fc ps -o comm= -p 1)" = tini
+          # Föräldralösa zombier (förälder PID 1) ska tini städa direkt.
+          ! docker exec fc ps -eo stat=,ppid= | awk '$1 ~ /^Z/ && $2 == 1' | grep -q .
+          # Chrome plockar upp sina egna renderingsprocesser en stund efter en rendering. Ge dem några sekunder.
+          for i in 1 2 3 4 5; do docker exec fc ps -eo stat= | grep -q '^Z' || break; sleep 1; done
           ! docker exec fc ps -eo stat= | grep -q '^Z'
       - name: Loggar från röktestet
         if: failure()
