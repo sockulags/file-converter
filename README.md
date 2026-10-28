@@ -75,9 +75,9 @@ Flera filer utan `merge` ger en zip, som i Gotenberg.
 ```
 
 Orsaker: `ENCRYPTED`, `SIGNED`, `UNTAGGED`, `TRANSPARENCY`, `MISSING_FONT`, `IMAGE_TOO_LARGE`,
-`PDFA_INVALID`, `UNREADABLE_PDF`, `LIBREOFFICE_FAILED`, `MERGE_FAILED`, `UNSUPPORTED_FORMAT`,
-`UNSUPPORTED_OPTION`, `UNSUPPORTED_ROUTE`, `DUPLICATE_FILENAME`, `BAD_REQUEST`, `TOO_LARGE`, `UNAVAILABLE`,
-`INTERNT_FEL`.
+`PDFA_INVALID`, `UNREADABLE_PDF`, `LIBREOFFICE_FAILED`, `LIBREOFFICE_TIMEOUT`, `LIBREOFFICE_CRASHED`, `BUSY`,
+`MERGE_FAILED`, `UNSUPPORTED_FORMAT`, `UNSUPPORTED_OPTION`, `UNSUPPORTED_ROUTE`, `DUPLICATE_FILENAME`,
+`BAD_REQUEST`, `TOO_LARGE`, `UNAVAILABLE`, `INTERNT_FEL`.
 
 ### Exempel
 
@@ -237,6 +237,11 @@ Prometheus-måtten ovan.
 - Bilder över 40 megapixel avvisas med en förklaring i stället för att packas upp.
 - Utplattningen av bilder har ett minnes- och tidstak (10 s per dokument). Över taket läggs
   bilderna mot vitt.
+- Bara fel i själva dokumentet ger `422 LIBREOFFICE_FAILED`. Fel som beror på last eller miljö ger `503`,
+  så att klienten kan försöka igen: `BUSY` (alla LibreOffice-processer upptagna, med `Retry-After`),
+  `LIBREOFFICE_TIMEOUT` (`CONVERTER_OFFICE_TASK_TIMEOUT` passerad, som i Gotenberg) och
+  `LIBREOFFICE_CRASHED`. Kraschar LibreOffice under ett jobb görs ett nytt försök med en ny process
+  innan anropet ger upp. I mätvärdena räknas `503` som utfallet `fel`, inte `avvisad`.
 - Två uppladdade filer med samma namn avvisas (`400`) i stället för att den ena tyst skriver över den andra.
 - Dolda annoteringar (dolda fält, interna kommentarer) tas bort, eftersom PDF/A-1 annars kräver att de visas.
 - Administrationens inloggning kontrolleras på vilken funktion anropet hamnar i, inte på URL:en.

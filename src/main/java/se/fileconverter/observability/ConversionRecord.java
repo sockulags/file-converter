@@ -100,8 +100,14 @@ public final class ConversionRecord {
     }
 
     public void failed(String message) {
+        failed("INTERNT_FEL", message, List.of());
+    }
+
+    /** Fel som inte beror på filen, t.ex. överlast (5xx). Räknas som utfallet "fel" så att larm på fel ser dem. */
+    public void failed(String reason, String message, List<String> details) {
         this.outcome = "fel";
-        this.reason = "INTERNT_FEL";
+        this.reason = reason;
         this.message = message;
+        this.details = List.copyOf(details);
     }
 }

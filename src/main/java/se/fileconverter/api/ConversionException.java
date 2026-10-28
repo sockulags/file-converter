@@ -25,6 +25,9 @@ public class ConversionException extends RuntimeException {
         PDFA_INVALID,
         UNREADABLE_PDF,
         LIBREOFFICE_FAILED,
+        LIBREOFFICE_TIMEOUT,
+        LIBREOFFICE_CRASHED,
+        BUSY,
         MERGE_FAILED,
         UNAVAILABLE,
         UNSUPPORTED_ROUTE
