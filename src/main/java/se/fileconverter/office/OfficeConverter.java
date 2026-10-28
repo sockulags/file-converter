@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.jodconverter.core.document.DefaultDocumentFormatRegistry;
@@ -209,7 +210,68 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         return pdf;
     }
 
+    /**
+     * Varför en konvertering i LibreOffice misslyckades. Bara {@link #DOCUMENT} beror på filen; övriga
+     * beror på last eller miljön och ger 503, så att klienten kan försöka igen.
+     */
+    enum Failure { BUSY, TIMEOUT, CRASH, STOPPED, DOCUMENT }
+
+    static Failure classify(OfficeException e) {
+        String message = String.valueOf(e.getMessage());
+        if (message.startsWith("No office manager available") || message.startsWith("The task queue is full")) {
+            return Failure.BUSY;
+        }
+        if (message.startsWith("Task was not executed, the office manager is stopped")) {
+            return Failure.STOPPED;
+        }
+        for (Throwable cause = e.getCause(); cause != null; cause = cause.getCause()) {
+            if (cause instanceof TimeoutException) {
+                return Failure.TIMEOUT;
+            }
+            // UNO-fel på bryggan (t.ex. DisposedException) betyder att soffice-processen dog under jobbet.
+            // Fel i själva dokumentet kommer som OfficeException utan UNO-orsak eller som com.sun.star.io-fel.
+            if (cause instanceof com.sun.star.uno.RuntimeException) {
+                return Failure.CRASH;
+            }
+        }
+        return Failure.DOCUMENT;
+    }
+
+    /** Kraschar LibreOffice görs ett nytt försök, eftersom JODConverter då startar en ny process. */
     private byte[] export(Path input, DocumentFormat inputFormat, OfficeOptions options, Map<String, Object> filterData) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return exportOnce(input, inputFormat, options, filterData);
+            } catch (OfficeException e) {
+                Failure failure = classify(e);
+                if (failure == Failure.CRASH && attempt == 1) {
+                    log.warn("LibreOffice kraschade under konverteringen av {}; försöker igen med en ny process", input.getFileName());
+                    continue;
+                }
+                throw failed(failure, input, e);
+            }
+        }
+    }
+
+    private ConversionException failed(Failure failure, Path input, OfficeException e) {
+        List<String> details = List.of(String.valueOf(e.getMessage()));
+        return switch (failure) {
+            case BUSY -> new ConversionException(HttpStatus.SERVICE_UNAVAILABLE, ConversionException.Reason.BUSY,
+                    "Alla LibreOffice-processer är upptagna. Försök igen om en stund.", details, e);
+            case TIMEOUT -> new ConversionException(HttpStatus.SERVICE_UNAVAILABLE, ConversionException.Reason.LIBREOFFICE_TIMEOUT,
+                    "LibreOffice blev inte klart med '" + input.getFileName() + "' inom " + config.taskTimeout().toSeconds() + " s.",
+                    details, e);
+            case CRASH -> new ConversionException(HttpStatus.SERVICE_UNAVAILABLE, ConversionException.Reason.LIBREOFFICE_CRASHED,
+                    "LibreOffice kraschade två gånger under konverteringen av '" + input.getFileName() + "'.", details, e);
+            case STOPPED -> new ConversionException(HttpStatus.SERVICE_UNAVAILABLE, ConversionException.Reason.UNAVAILABLE,
+                    "LibreOffice startas om. Försök igen om en stund.", details, e);
+            case DOCUMENT -> new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT, ConversionException.Reason.LIBREOFFICE_FAILED,
+                    "LibreOffice kunde inte konvertera '" + input.getFileName() + "'.", details, e);
+        };
+    }
+
+    private byte[] exportOnce(Path input, DocumentFormat inputFormat, OfficeOptions options, Map<String, Object> filterData)
+            throws OfficeException {
         Path output = input.resolveSibling(input.getFileName() + ".pdf");
         lock.readLock().lock();
         try {
@@ -231,9 +293,6 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
                     .as(DefaultDocumentFormatRegistry.PDF)
                     .execute();
             return Files.readAllBytes(output);
-        } catch (OfficeException e) {
-            throw new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT, ConversionException.Reason.LIBREOFFICE_FAILED,
-                    "LibreOffice kunde inte konvertera '" + input.getFileName() + "'.", List.of(String.valueOf(e.getMessage())), e);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         } finally {

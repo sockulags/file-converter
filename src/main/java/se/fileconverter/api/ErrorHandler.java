@@ -3,6 +3,7 @@ package se.fileconverter.api;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 import se.fileconverter.observability.ConversionRecord;
+import se.fileconverter.observability.ConversionTelemetry;
 
 /**
  * Fel som problem+json (RFC 9457). {@code reason} är en maskinläsbar orsak, {@code violations} listar
@@ -22,9 +24,23 @@ public class ErrorHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ErrorHandler.class);
 
+    private final ConversionTelemetry telemetry;
+
+    public ErrorHandler(ConversionTelemetry telemetry) {
+        this.telemetry = telemetry;
+    }
+
     @ExceptionHandler(ConversionException.class)
-    ProblemDetail conversion(ConversionException e, HttpServletRequest request) {
-        ConversionRecord.of(request).rejected(e.reason().name(), e.getMessage(), e.details());
+    ProblemDetail conversion(ConversionException e, HttpServletRequest request, HttpServletResponse response) {
+        if (e.status().is5xxServerError()) {
+            ConversionRecord.of(request).failed(e.reason().name(), e.getMessage(), e.details());
+        } else {
+            ConversionRecord.of(request).rejected(e.reason().name(), e.getMessage(), e.details());
+        }
+        if (e.reason() == ConversionException.Reason.BUSY) {
+            telemetry.busy();
+            response.setHeader("Retry-After", "10");
+        }
         ProblemDetail problem = problem(e.status(), e.getMessage(), e.reason().name(), request);
         if (!e.details().isEmpty()) {
             problem.setProperty("violations", e.details());
