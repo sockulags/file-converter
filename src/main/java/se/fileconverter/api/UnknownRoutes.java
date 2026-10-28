@@ -33,7 +33,7 @@ public class UnknownRoutes {
         this.telemetry = telemetry;
     }
 
-    @RequestMapping({"/forms/**", "/version", "/prometheus/metrics", "/debug"})
+    @RequestMapping({"/forms/**", "/prometheus/metrics", "/debug"})
     public void unknown(HttpServletRequest request) {
         String path = request.getRequestURI();
         String route = GOTENBERG_ROUTES.contains(path) ? path : "okand";

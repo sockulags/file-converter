@@ -533,11 +533,21 @@ class ConversionControllerTest {
                 .andExpect(status().isBadRequest());
     }
 
+    /** Samma form som Gotenbergs /health (F6 i gap-analysen), med LibreOffice-versionen som tillägg. */
     @Test
     void healthReportsLibreOffice() throws Exception {
         mvc.perform(get("/health"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.details.libreoffice").value("up"));
+                .andExpect(jsonPath("$.status").value("up"))
+                .andExpect(jsonPath("$.details.libreoffice.status").value("up"))
+                .andExpect(jsonPath("$.details.libreoffice.timestamp").isString())
+                .andExpect(jsonPath("$.details.libreoffice.version").value(org.hamcrest.Matchers.startsWith("LibreOffice ")));
+    }
+
+    /** Fontpaketen i imagen (och i CI) ska ge alla inbyggda alias en målfont, annars får mallarna fel font. */
+    @Test
+    void builtInFontAliasesHaveTargets(@Autowired se.fileconverter.assets.FontAliasCheck aliases) {
+        assertThat(aliases.missing()).isEmpty();
     }
 
     private byte[] toPdfa1a(String fixture) throws Exception {

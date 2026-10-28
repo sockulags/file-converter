@@ -1,7 +1,6 @@
 package se.fileconverter.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -99,17 +98,17 @@ class RequestUsageTest {
     @Test
     void gotenbergRoutesThatDoNotExistHereAreCounted() throws Exception {
         double url = count("converter.unknown.routes", "route", "/forms/chromium/convert/url", "method", "POST");
-        double version = count("converter.unknown.routes", "route", "/version", "method", "GET");
+        double split = count("converter.unknown.routes", "route", "/forms/pdfengines/split", "method", "POST");
         double other = count("converter.unknown.routes", "route", "okand", "method", "POST");
 
         mvc.perform(multipart("/forms/chromium/convert/url").param("url", "https://example.com"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.reason").value("UNSUPPORTED_ROUTE"));
-        mvc.perform(get("/version")).andExpect(status().isNotFound());
+        mvc.perform(post("/forms/pdfengines/split")).andExpect(status().isNotFound());
         mvc.perform(post("/forms/nagot/annat")).andExpect(status().isNotFound());
 
         assertThat(count("converter.unknown.routes", "route", "/forms/chromium/convert/url", "method", "POST")).isEqualTo(url + 1);
-        assertThat(count("converter.unknown.routes", "route", "/version", "method", "GET")).isEqualTo(version + 1);
+        assertThat(count("converter.unknown.routes", "route", "/forms/pdfengines/split", "method", "POST")).isEqualTo(split + 1);
         assertThat(count("converter.unknown.routes", "route", "okand", "method", "POST")).isEqualTo(other + 1);
     }
 

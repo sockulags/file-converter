@@ -22,7 +22,6 @@ import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
@@ -71,15 +70,6 @@ public class ConversionController {
     }
 
     record Output(String name, byte[] pdf, PdfaValidator.Report report) {
-    }
-
-    /** 503 tills LibreOffice-poolen är igång, så att Kubernetes inte skickar trafik för tidigt. */
-    @GetMapping("/health")
-    public ResponseEntity<Map<String, Object>> health() {
-        String libreoffice = !office.isEnabled() ? "disabled" : office.isRunning() ? "up" : "down";
-        boolean up = !"down".equals(libreoffice);
-        return ResponseEntity.status(up ? 200 : 503)
-                .body(Map.of("status", up ? "up" : "down", "details", Map.of("libreoffice", libreoffice)));
     }
 
     @ConcurrencyLimit.Limited
