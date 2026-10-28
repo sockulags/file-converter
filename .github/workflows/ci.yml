@@ -36,6 +36,10 @@ jobs:
           curl -sf -o out.pdf -F files=@src/test/resources/fixtures/beslut.docx -F pdfa=PDF/A-1a \
             localhost:3000/forms/libreoffice/convert -D headers.txt
           grep -i "x-pdfa-compliant: true" headers.txt
+          printf '<html><body><div style="display:flex">Flex</div><script>document.body.append("JS")</script></body></html>' > index.html
+          curl -sf -o mall.pdf -F files=@index.html -F pdfa=PDF/A-2b localhost:3000/forms/chromium/convert/html -D mall.txt
+          grep -i "x-converter-engine: chromium" mall.txt
+          grep -i "x-pdfa-compliant: true" mall.txt
 
   manifest:
     runs-on: ubuntu-24.04

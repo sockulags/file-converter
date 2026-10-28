@@ -31,6 +31,7 @@ import org.springframework.stereotype.Component;
  *   <li>{@code converter_request_fields_total{route,field,handling}}: vilka fält och Gotenberg-huvuden klienterna skickar</li>
  *   <li>{@code converter_request_files_total{route,extension}}: vilka filtyper klienterna skickar</li>
  *   <li>{@code converter_unknown_routes_total{route,method}}: anrop till Gotenberg-routes som inte finns här</li>
+ *   <li>{@code converter_engine_selected_total{engine,reason}}: vilken motor HTML-mallar renderas med, och varför</li>
  * </ul>
  */
 @Component
@@ -80,6 +81,9 @@ public class ConversionTelemetry {
 
         record.fields.forEach((field, handling) -> registry.counter("converter.request.fields",
                 "route", record.route, "field", field, "handling", handling).increment());
+        if (record.engine != null) {
+            registry.counter("converter.engine.selected", "engine", record.engine, "reason", record.engineReason).increment();
+        }
         for (String extension : record.extensions) {
             registry.counter("converter.request.files", "route", record.route, "extension", extension).increment();
         }

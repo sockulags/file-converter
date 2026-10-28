@@ -9,6 +9,7 @@ import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;
 import se.fileconverter.config.ConverterProperties;
 import se.fileconverter.html.FontRegistry;
+import se.fileconverter.chromium.ChromiumConverter;
 import se.fileconverter.office.OfficeConverter;
 
 /**
@@ -22,6 +23,7 @@ public class AssetReloader implements DisposableBean {
     private final AssetStore store;
     private final FontRegistry fonts;
     private final OfficeConverter office;
+    private final ChromiumConverter chromium;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "asset-reloader");
         thread.setDaemon(true);
@@ -29,10 +31,12 @@ public class AssetReloader implements DisposableBean {
     });
     private String fingerprint;
 
-    public AssetReloader(AssetStore store, FontRegistry fonts, OfficeConverter office, ConverterProperties properties) {
+    public AssetReloader(AssetStore store, FontRegistry fonts, OfficeConverter office, ChromiumConverter chromium,
+            ConverterProperties properties) {
         this.store = store;
         this.fonts = fonts;
         this.office = office;
+        this.chromium = chromium;
         this.fingerprint = store.fingerprint();
         long interval = properties.assets().pollInterval().toMillis();
         scheduler.scheduleWithFixedDelay(this::reloadIfChanged, interval, interval, TimeUnit.MILLISECONDS);
@@ -47,6 +51,7 @@ public class AssetReloader implements DisposableBean {
             }
             fonts.reload();
             office.restart();
+            chromium.restart();
             // Först efter lyckad omladdning, så att ett misslyckat försök görs om vid nästa kontroll.
             fingerprint = current;
             return true;

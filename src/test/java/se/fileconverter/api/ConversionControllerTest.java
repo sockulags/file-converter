@@ -427,8 +427,15 @@ class ConversionControllerTest {
 
     @Test
     void fieldsWithoutEffectAreReportedNotSilentlyDropped() throws Exception {
+        // Mallar når inte nätverket, så cookies och extraHttpHeaders har ingen verkan i någon motor.
         mvc.perform(multipart("/forms/chromium/convert/html").file(html("index.html", "<html><body><p>x</p></body></html>"))
-                        .param("waitDelay", "2s").param("userAgent", "x"))
+                        .param("cookies", "[]").param("extraHttpHeaders", "{}"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Converter-Engine", "openhtmltopdf"))
+                .andExpect(header().string(GotenbergOptions.IGNORED_HEADER, "cookies,extraHttpHeaders"));
+        // Chromium-fält har ingen verkan när openhtmltopdf väljs uttryckligen.
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html("index.html", "<html><body><p>x</p></body></html>"))
+                        .param("converterEngine", "openhtmltopdf").param("waitDelay", "2s").param("userAgent", "x"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(GotenbergOptions.IGNORED_HEADER, "userAgent,waitDelay"));
     }
@@ -440,7 +447,10 @@ class ConversionControllerTest {
                 .andExpect(jsonPath("$.reason").value("UNSUPPORTED_OPTION"));
         mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")).header("Gotenberg-Webhook-Url", "http://x"))
                 .andExpect(status().isBadRequest());
-        mvc.perform(multipart("/forms/chromium/convert/html").file(html("index.html", "<p>x</p>")).param("singlePage", "true"))
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html("index.html", "<p>x</p>"))
+                        .param("converterEngine", "openhtmltopdf").param("singlePage", "true"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html("index.html", "<p>x</p>")).param("converterEngine", "wkhtmltopdf"))
                 .andExpect(status().isBadRequest());
     }
 

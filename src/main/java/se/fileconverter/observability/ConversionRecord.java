@@ -28,6 +28,8 @@ public final class ConversionRecord {
     List<String> extensions = List.of();
     Map<String, String> fields = Map.of();
     List<String> notSupported = List.of();
+    String engine;
+    String engineReason;
     String outcome;
     String reason;
     String message;
@@ -67,6 +69,12 @@ public final class ConversionRecord {
     public void fields(Map<String, String> fields, List<String> notSupported) {
         this.fields = Map.copyOf(fields);
         this.notSupported = List.copyOf(notSupported);
+    }
+
+    /** Motorn för en HTML-mall och varför den valdes (en fast lista, säker som etikett). */
+    public void engine(String engine, String reason) {
+        this.engine = engine;
+        this.engineReason = reason;
     }
 
     static String pdfaLabel(String pdfa) {

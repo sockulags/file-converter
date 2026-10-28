@@ -30,6 +30,11 @@ public class ConversionException extends RuntimeException {
         BUSY,
         MERGE_FAILED,
         UNAVAILABLE,
+        CHROMIUM_TIMEOUT,
+        CHROMIUM_CRASHED,
+        CHROMIUM_FAILED,
+        CONSOLE_EXCEPTION,
+        RESOURCE_FAILED,
         UNSUPPORTED_ROUTE
     }
 

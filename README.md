@@ -31,10 +31,10 @@ Krypterade och redan signerade filer samt jättebilder avvisas i båda lägena.
 | Route | Indata | Motor |
 |---|---|---|
 | `POST /forms/libreoffice/convert` | Office-filer (docx, xlsx, pptx, odt, rtf …) | LibreOffice via JODConverter |
-| `POST /forms/chromium/convert/html` | `index.html` + resurser (bilder, css, ttf) | openhtmltopdf |
+| `POST /forms/chromium/convert/html` | `index.html` + resurser (bilder, css, js, ttf) | openhtmltopdf eller Chromium, efter mallen (se nedan) |
 | `POST /forms/pdfengines/convert` | PDF-filer | PDFBox (normalisering) |
 | `POST /forms/pdfengines/merge` | PDF-filer, slås ihop i bokstavsordning | PDFBox |
-| `GET /health` | – | `503` tills LibreOffice är igång |
+| `GET /health` | – | `503` tills LibreOffice är igång. `details` visar `libreoffice` och `chromium` |
 
 Port `3000`, precis som Gotenberg. Mätvärden på port `9090`.
 
@@ -49,10 +49,41 @@ när resultatet inte kan bli det klienten väntar sig.
 |---|---|---|---|
 | alla | `pdfa`, `metadata` (JSON), `flatten`, huvudena `Gotenberg-Output-Filename` och `Gotenberg-Trace` | okända fält | `pdfua=true`, `split*`, `downloadFrom`, `Gotenberg-Webhook-*` |
 | `libreoffice/convert` | `merge`, `landscape`, `nativePageRanges`, `password`, `exportFormFields`, `allowDuplicateFieldNames`, `exportBookmarks`, `exportBookmarksToPdfDestination`, `exportPlaceholders`, `exportNotes`, `exportNotesPages`, `exportOnlyNotesPages`, `exportNotesInMargin`, `convertOooTargetToPdfTarget`, `exportLinksRelativeFsys`, `exportHiddenSlides`, `skipEmptyPages`, `singlePageSheets`, `losslessImageCompression`, `quality`, `reduceImageResolution`, `maxImageResolution`, `addOriginalDocumentAsStream` (ej med PDF/A) | | |
-| `chromium/convert/html` | `header.html`, `footer.html`, `paperWidth`, `paperHeight`, `margin*`, `landscape`, `preferCssPageSize`, `printBackground`, `generateDocumentOutline`, `nativePageRanges` (ej med PDF/A-1a) | `waitDelay`, `waitForExpression`, `cookies`, `userAgent`, `extraHttpHeaders`, `failOn*`, `skipNetworkIdleEvent`, `omitBackground`, `emulatedMediaType=print` | `singlePage`, `scale` ≠ 1, `emulatedMediaType=screen` |
+| `chromium/convert/html`, båda motorerna | `header.html`, `footer.html`, `paperWidth`, `paperHeight`, `margin*`, `landscape`, `preferCssPageSize`, `printBackground`, `generateDocumentOutline`, `nativePageRanges`, `converterEngine` (tillägg) | `cookies`, `extraHttpHeaders` (mallar når inte nätverket) | |
+| `chromium/convert/html`, Chromium | `waitDelay` (tak `CONVERTER_CHROMIUM_MAX_WAIT_DELAY`), `waitForExpression`, `waitForSelector`, `emulatedMediaType`, `emulatedMediaFeatures`, `userAgent`, `omitBackground`, `scale`, `singlePage`, `generateTaggedPdf`, `failOnConsoleExceptions`, `failOnResourceLoadingFailed`, `failOnResourceHttpStatusCodes`, `skipNetworkIdleEvent` | `failOnHttpStatusCodes`, `ignoreResourceHttpStatusDomains` (sidan läses aldrig över http) | |
+| `chromium/convert/html`, openhtmltopdf | | Chromium-fälten ovan | `singlePage`, `scale` ≠ 1, `emulatedMediaType=screen` (bara med `converterEngine=openhtmltopdf`; annars väljs Chromium), `nativePageRanges` med en a-nivå |
 | `pdfengines/convert`, `merge` | `merge`-ordning i bokstavsordning | | |
 
 Tal utan enhet i pappers- och marginalfält är tum, som i Gotenberg. Annars `mm`, `cm`, `in`, `pt`, `px`.
+
+### HTML-mallar: openhtmltopdf eller Chromium
+
+Varje mall renderas med den motor som klarar den. Svaret säger vilken och varför
+(`X-Converter-Engine`, `X-Converter-Engine-Reason`):
+
+| Ordning | Motor | Orsak |
+|---|---|---|
+| 1. Fältet `converterEngine=chromium\|openhtmltopdf` | den valda | `vald` |
+| 2. Fält som bara fungerar i en webbläsare: `waitDelay`, `waitFor*`, `emulatedMediaFeatures`, `failOnConsoleExceptions`, `singlePage`, `omitBackground`, `generateTaggedPdf`, `scale` ≠ 1, `emulatedMediaType=screen` | Chromium | `falt` |
+| 3. Mallen (index.html, header.html, footer.html och alla .css): `<script>`, `on*=`, `javascript:` | Chromium | `script` |
+| `display: flex`, `display: grid`/`grid-template` | Chromium | `flexbox`, `grid` |
+| `position: sticky`, `var(--…)`, `@supports`, `@container`, `transform`, `filter`, `box-shadow`, `opacity` < 1, kolumner | Chromium | `css3` |
+| `<svg>`, `.svg`-bilder, `<canvas>`, `<iframe>` | Chromium | `svg`, `canvas`, `iframe` |
+| 4. Annars | openhtmltopdf | `standard` |
+
+- **openhtmltopdf** ger taggad PDF/A direkt från HTML-strukturen och är förstahandsvalet för egna mallar.
+  Utan fält blir sidan A4 och mallens `@page` gäller.
+- **Chromium** (Chrome for Testing, headless) renderar som Gotenberg och med Gotenbergs standardvärden:
+  Letter, marginaler 0,39 tum, `preferCssPageSize=false`, `printBackground=false`, och `header.html`/
+  `footer.html` som Chromiums sidhuvud och sidfot. Med PDF/A begärd skapar Chromium en taggad PDF.
+  En b-nivå i del 2 eller 3 märks då med a-nivån om filen klarar den (`X-Pdfa-Level: PDF/A-2a` när
+  `PDF/A-2b` begärdes), annars den begärda nivån. Chromium-PDF:er har ofta transparens, så PDF/A-2b
+  är det naturliga valet. `failOn*` ger `409` som i Gotenberg.
+
+Mallen öppnas i Chromium under en påhittad adress, och varje begäran från sidan besvaras från
+filerna i anropet. Allt annat stoppas: andra adresser, `file:` och nätverket (alla värdnamn pekar
+på ingenting). Varje anrop får en egen inkognitokontext. Fonterna och aliasen är desamma som för
+LibreOffice och openhtmltopdf.
 
 Detaljer:
 - **`header.html`/`footer.html`** blir löpande sidhuvud och sidfot i sidans marginaler.
@@ -87,7 +118,8 @@ Flera filer utan `merge` ger en zip, som i Gotenberg.
 Orsaker: `ENCRYPTED`, `SIGNED`, `UNTAGGED`, `TRANSPARENCY`, `MISSING_FONT`, `IMAGE_TOO_LARGE`,
 `PDFA_INVALID`, `UNREADABLE_PDF`, `LIBREOFFICE_FAILED`, `LIBREOFFICE_TIMEOUT`, `LIBREOFFICE_CRASHED`, `BUSY`,
 `MERGE_FAILED`, `UNSUPPORTED_FORMAT`, `UNSUPPORTED_OPTION`, `UNSUPPORTED_ROUTE`, `DUPLICATE_FILENAME`,
-`BAD_REQUEST`, `TOO_LARGE`, `UNAVAILABLE`, `INTERNT_FEL`.
+`BAD_REQUEST`, `TOO_LARGE`, `UNAVAILABLE`, `CHROMIUM_TIMEOUT`, `CHROMIUM_CRASHED`, `CHROMIUM_FAILED`,
+`CONSOLE_EXCEPTION`, `RESOURCE_FAILED`, `INTERNT_FEL`.
 
 ### Exempel
 
@@ -208,9 +240,10 @@ annoteringar för Prometheus.
 | `converter_request_fields_total` | `route`, `field`, `handling` | Fält och `Gotenberg-*`-huvuden klienterna skickar: `stods`, `ignoreras`, `avvisas` |
 | `converter_request_files_total` | `route`, `extension` | Filtyper klienterna skickar |
 | `converter_unknown_routes_total` | `route`, `method` | Anrop till Gotenberg-routes som inte finns här (besvaras med `404`) |
+| `converter_engine_selected_total` | `engine`, `reason` | Vilken motor HTML-mallar renderas med, och varför |
 
 Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`, `ms`, `filer`,
-`ej_stod`) med spårnings-id. `ej_stod` listar fält som ignorerades eller avvisades, med klientens egna namn. JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`.
+`ej_stod`, `motor`) med spårnings-id. `ej_stod` listar fält som ignorerades eller avvisades, med klientens egna namn. JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`.
 
 ### Vad klienterna skickar
 
@@ -234,13 +267,12 @@ Prometheus-måtten ovan.
 
 ## Skillnader mot Gotenberg
 
-- HTML renderas med openhtmltopdf, inte Chromium. Det gäller CSS 2.1 med delar av CSS3: **inte
-  flexbox, grid eller JavaScript**, och `opacity` och skuggor ignoreras. Det passar egna mallar
-  och är det som gör PDF/A-1a möjligt. `header.html`/`footer.html` fungerar som i Gotenberg, och
-  mallar kan också använda CSS direkt (`@page` + `position: running()`).
-- Mallar kan bara läsa filer som skickats med i anropet. Nätverksanrop och övriga filsystemet är spärrade.
+- HTML-mallar utan Chromium-behov renderas med openhtmltopdf (CSS 2.1 med delar av CSS3), som ger
+  taggad PDF/A-1a direkt. Där är standardformatet A4 och mallar kan använda `@page` +
+  `position: running()`. Mallar med flexbox, grid, JavaScript m.m. renderas med Chromium som i Gotenberg.
+- Mallar kan bara läsa filer som skickats med i anropet. Nätverksanrop och övriga filsystemet är
+  spärrade, så `cookies` och `extraHttpHeaders` har ingen verkan.
 - Routes för URL-konvertering, skärmdumpar och split finns inte.
-- Standardformat för HTML är A4 (Gotenberg: Letter) om varken mallen eller fälten anger något.
 - PDF/A-1a och a-nivåerna i del 2 och 3 utöver Gotenbergs b-nivåer. Bifogade filer i PDF/A-3
   (`addOriginalDocumentAsStream`, e-faktura) och PDF/UA stöds inte ännu.
 
@@ -258,6 +290,11 @@ Prometheus-måtten ovan.
   `LIBREOFFICE_TIMEOUT` (`CONVERTER_OFFICE_TASK_TIMEOUT` passerad, som i Gotenberg) och
   `LIBREOFFICE_CRASHED`. Kraschar LibreOffice under ett jobb görs ett nytt försök med en ny process
   innan anropet ger upp. I mätvärdena räknas `503` som utfallet `fel`, inte `avvisad`.
+- Chromium körs utan egen sandlåda (`CONVERTER_CHROMIUM_SANDBOX=false`), eftersom den kräver user
+  namespaces som containrar sällan har. Isoleringen sköts av containern (icke-root, seccomp, inget
+  nätverk) och av att varje begäran från mallen besvaras eller stoppas av tjänsten. Varje rendering
+  har en tidsgräns (`CONVERTER_CHROMIUM_JOB_TIMEOUT`), och webbläsaren startas om efter
+  `CONVERTER_CHROMIUM_RESTART_AFTER_JOBS` renderingar eller om den kraschar.
 - Två uppladdade filer med samma namn avvisas (`400`) i stället för att den ena tyst skriver över den andra.
 - Dolda annoteringar (dolda fält, interna kommentarer) tas bort, eftersom PDF/A-1 annars kräver att de visas.
 - Administrationens inloggning kontrolleras på vilken funktion anropet hamnar i, inte på URL:en.
@@ -327,6 +364,12 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 | `CONVERTER_ASSETS_POLL_INTERVAL` | `30s` | Hur ofta andra poddars ändringar plockas upp |
 | `CONVERTER_LIMITS_MAX_CONCURRENT` | antal processorer | Samtidiga konverteringar per instans. Fler köar |
 | `CONVERTER_LIMITS_QUEUE_TIMEOUT` | `60s` | Därefter `503` med `Retry-After` |
+| `CONVERTER_CHROMIUM_ENABLED` | `true` | Av = mallar som kräver Chromium får `503 UNAVAILABLE` |
+| `CONVERTER_CHROMIUM_PATH` | tomt | `chrome-headless-shell` eller `chrome`. Tomt = `/opt/chrome-headless-shell` m.fl. kända platser |
+| `CONVERTER_CHROMIUM_MAX_CONCURRENT` | `2` | Samtidiga Chromium-sidor. Varje sida tar cirka 150–300 MB |
+| `CONVERTER_CHROMIUM_QUEUE_TIMEOUT` | `30s` | Därefter `503 BUSY` med `Retry-After` |
+| `CONVERTER_CHROMIUM_JOB_TIMEOUT` | `60s` | Hel rendering inklusive väntan. Därefter `503 CHROMIUM_TIMEOUT` |
+| `CONVERTER_CHROMIUM_MAX_WAIT_DELAY` | `30s` | Tak för `waitDelay` |
 | `SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE` | `100MB` | |
 | `SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE` | `100MB` | |
 
@@ -336,6 +379,12 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 mvn verify   # kräver LibreOffice och fonterna; integrationstesterna hoppas över utan LibreOffice
 ```
 
+Chromium-testerna körs när en Chromium finns (`CONVERTER_CHROMIUM_PATH`, `/usr/bin/google-chrome`
+m.fl., eller Playwrights `chrome-headless-shell`), annars hoppas de över.
+
+Imagen innehåller Chrome for Testing (`CHROME_VERSION` i `Dockerfile`), som uppdateras för hand.
+Chromium och dess bibliotek gör imagen cirka 450 MB större.
+
 Varje PDF/A-svar i integrationstesterna valideras om med veraPDF och kontrolleras för innehåll i
 strukturträdet. Testfilerna skapas med `scripts/make_fixtures.py` (kräver python-docx, Pillow och
 fonttools). Testfonterna är omdöpta delmängder av DejaVu Sans.
@@ -343,6 +392,7 @@ fonttools). Testfonterna är omdöpta delmängder av DejaVu Sans.
 ## Licenser
 
 LibreOffice (MPL 2.0), PDFBox (Apache 2.0), veraPDF (MPL 2.0 / GPL 3, dubbellicens),
-openhtmltopdf (LGPL 2.1), jsoup (MIT), JODConverter (Apache 2.0), Spring Boot (Apache 2.0).
+openhtmltopdf (LGPL 2.1), jsoup (MIT), JODConverter (Apache 2.0), Spring Boot (Apache 2.0),
+Chrome for Testing (BSD m.fl., Chromium-licenserna).
 Ingen AGPL. Ghostscript används inte.
 CMYK-profilen `FOGRA39L_coated.icc` kommer från colord och är fri (CC0).

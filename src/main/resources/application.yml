@@ -55,6 +55,15 @@ converter:
       "[Courier]": Liberation Mono
       "[Calibri]": Carlito
       "[Cambria]": Caladea
+  chromium:
+    enabled: true
+    path: ""               # tomt = leta efter chrome-headless-shell/chrome på kända platser
+    sandbox: false         # kräver user namespaces; i en container isolerar containern i stället
+    max-concurrent: 2      # samtidiga Chromium-sidor; varje sida tar ca 150–300 MB
+    queue-timeout: 30s
+    job-timeout: 60s       # hel rendering inklusive waitDelay och waitForExpression
+    max-wait-delay: 30s    # tak för waitDelay
+    restart-after-jobs: 200
   pdfa:
     # false = bästa försök (som Gotenberg): filen returneras även om allt inte gick att rätta,
     # och X-Pdfa-Compliant/X-Pdfa-Problems säger vad. true = avvisa med 422.

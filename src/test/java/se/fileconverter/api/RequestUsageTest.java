@@ -45,7 +45,7 @@ class RequestUsageTest {
 
     @Test
     void fieldsHeadersAndFileTypesAreCountedPerRoute() throws Exception {
-        double ignored = count("converter.request.fields", "route", "chromium-html", "field", "waitDelay", "handling", "ignoreras");
+        double ignored = count("converter.request.fields", "route", "chromium-html", "field", "cookies", "handling", "ignoreras");
         double unknown = count("converter.request.fields", "route", "chromium-html", "field", "okant", "handling", "ignoreras");
         double trace = count("converter.request.fields", "route", "chromium-html", "field", "Gotenberg-Trace", "handling", "stods");
         double pdfa = count("converter.request.fields", "route", "chromium-html", "field", "pdfa", "handling", "stods");
@@ -53,11 +53,11 @@ class RequestUsageTest {
         double png = count("converter.request.files", "route", "chromium-html", "extension", "png");
 
         mvc.perform(multipart("/forms/chromium/convert/html").file(html()).file(new MockMultipartFile("files", "logo.png", null, new byte[0]))
-                        .param("waitDelay", "2s").param("klientensEgetFalt", "x").param("pdfa", "PDF/A-1b")
+                        .param("cookies", "[]").param("klientensEgetFalt", "x").param("pdfa", "PDF/A-1b")
                         .header("Gotenberg-Trace", "arende-1"))
                 .andExpect(status().isOk());
 
-        assertThat(count("converter.request.fields", "route", "chromium-html", "field", "waitDelay", "handling", "ignoreras")).isEqualTo(ignored + 1);
+        assertThat(count("converter.request.fields", "route", "chromium-html", "field", "cookies", "handling", "ignoreras")).isEqualTo(ignored + 1);
         assertThat(count("converter.request.fields", "route", "chromium-html", "field", "okant", "handling", "ignoreras")).isEqualTo(unknown + 1);
         assertThat(count("converter.request.fields", "route", "chromium-html", "field", "Gotenberg-Trace", "handling", "stods")).isEqualTo(trace + 1);
         assertThat(count("converter.request.fields", "route", "chromium-html", "field", "pdfa", "handling", "stods")).isEqualTo(pdfa + 1);
@@ -71,7 +71,8 @@ class RequestUsageTest {
         double paper = count("converter.request.fields", "route", "chromium-html", "field", "paperWidth", "handling", "stods");
         double webhook = count("converter.request.fields", "route", "chromium-html", "field", "Gotenberg-Webhook-Url", "handling", "avvisas");
 
-        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("scale", "2").param("paperWidth", "8.27"))
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("converterEngine", "openhtmltopdf")
+                        .param("scale", "2").param("paperWidth", "8.27"))
                 .andExpect(status().isBadRequest());
         mvc.perform(multipart("/forms/chromium/convert/html").file(html()).header("gotenberg-webhook-url", "http://klient"))
                 .andExpect(status().isBadRequest());
