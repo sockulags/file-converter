@@ -67,6 +67,7 @@ converter:
   assets:
     dir: ./data            # i Docker: /data, i Kubernetes en delad volym (ReadWriteMany)
     poll-interval: 30s
+    reload-jitter: 60s     # poddarna laddar om (och startar om LibreOffice) vid olika tider inom detta fönster
   limits:
     max-concurrent: 0      # 0 = antal processorer
     queue-timeout: 60s

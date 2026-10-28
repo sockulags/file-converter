@@ -136,6 +136,7 @@
   <div class="panel">
     <h2>Egna alias</h2>
     <p class="hint">När ett dokument eller en mall begär fonten till vänster används fonten till höger. Använd det för fonter ni inte har licens för, t.ex. en måttkompatibel ersättare. Egna alias går före de inbyggda.</p>
+    <p class="hint" id="alias-missing"></p>
     <div id="alias-rows"></div>
     <datalist id="families"></datalist>
     <div class="row">
@@ -472,9 +473,14 @@ async function loadAliases() {
   Object.entries(data.custom).forEach(([from, to]) => aliasRow(from, to));
   if (!Object.keys(data.custom).length) aliasRow();
   const custom = new Set(Object.keys(data.custom).map(k => k.toLowerCase()));
+  const missing = new Set(Object.keys(data.missing || {}).map(k => k.toLowerCase()));
+  const target = (from, to) => esc(to) + (missing.has(from.toLowerCase()) ? ' <strong>(fonten saknas, aliaset används inte)</strong>' : '');
   $('alias-builtin').innerHTML = Object.entries(data.effective)
     .filter(([from]) => !custom.has(from.toLowerCase()))
-    .map(([from, to]) => '<tr><td>' + esc(from) + '</td><td>' + esc(to) + '</td></tr>').join('');
+    .map(([from, to]) => '<tr><td>' + esc(from) + '</td><td>' + target(from, to) + '</td></tr>').join('');
+  $('alias-missing').textContent = Object.keys(data.missing || {}).length
+    ? 'Alias utan installerad målfont: ' + Object.entries(data.missing).map(([from, to]) => from + ' → ' + to).join(', ') + '. Mallar som begär dem får ingen font.'
+    : '';
 }
 
 $('alias-add').addEventListener('click', () => aliasRow());
