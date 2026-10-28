@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -57,10 +58,17 @@ public class ConversionTracingFilter extends OncePerRequestFilter {
                 }
                 Duration duration = Duration.ofNanos(System.nanoTime() - start);
                 telemetry.record(record, duration);
-                log.info("route={} pdfa={} utfall={} orsak={} status={} ms={} filer={} ej_stod={} motor={}", record.route, record.pdfa,
-                        record.outcome == null ? "ok" : record.outcome, record.reason == null ? "-" : record.reason,
-                        response.getStatus(), duration.toMillis(), record.files, record.notSupported,
-                        record.engine == null ? "-" : record.engine + "/" + record.engineReason);
+                String outcome = record.outcome == null ? "ok" : record.outcome;
+                String reason = record.reason == null ? "-" : record.reason;
+                String engine = record.engine == null ? "-" : record.engine + "/" + record.engineReason;
+                List<String> files = telemetry.files(record);
+                // Fälten blir egna fält med strukturerade loggar (LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs).
+                log.atInfo().addKeyValue("route", record.route).addKeyValue("pdfa", record.pdfa)
+                        .addKeyValue("utfall", outcome).addKeyValue("orsak", reason)
+                        .addKeyValue("status", response.getStatus()).addKeyValue("ms", duration.toMillis())
+                        .addKeyValue("filer", files).addKeyValue("ej_stod", record.notSupported).addKeyValue("motor", engine)
+                        .log("route={} pdfa={} utfall={} orsak={} status={} ms={} filer={} ej_stod={} motor={}", record.route, record.pdfa,
+                                outcome, reason, response.getStatus(), duration.toMillis(), files, record.notSupported, engine);
             }
             MDC.remove("traceId");
         }

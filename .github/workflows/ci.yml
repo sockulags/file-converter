@@ -16,12 +16,16 @@ jobs:
             libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
             fontconfig fonts-dejavu-core fonts-liberation fonts-liberation2 \
             fonts-crosextra-carlito fonts-crosextra-caladea
+      # Samma Java-version som imagen kör (JRE 25). Koden byggs fortfarande för Java 21 (pom.xml).
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
           cache: maven
+      # Integrationstesterna fallerar i stället för att hoppas över om LibreOffice saknas.
       - run: mvn -B verify
+        env:
+          REQUIRE_LIBREOFFICE: "true"
 
   docker:
     runs-on: ubuntu-26.04

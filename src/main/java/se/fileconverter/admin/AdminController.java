@@ -24,6 +24,7 @@ import se.fileconverter.api.ConversionException;
 import se.fileconverter.api.Workspace;
 import se.fileconverter.assets.AssetReloader;
 import se.fileconverter.assets.AssetStore;
+import se.fileconverter.assets.FontAliasCheck;
 import se.fileconverter.assets.FontInspector;
 import se.fileconverter.html.FontRegistry;
 import se.fileconverter.observability.ConversionRecord;
@@ -42,10 +43,12 @@ public class AdminController {
     private final CheckService check;
 
     private final ConversionTelemetry telemetry;
+    private final FontAliasCheck aliasCheck;
 
     public AdminController(AssetStore store, AssetReloader reloader, FontRegistry fonts, CheckService check,
-            ConversionTelemetry telemetry) {
+            ConversionTelemetry telemetry, FontAliasCheck aliasCheck) {
         this.telemetry = telemetry;
+        this.aliasCheck = aliasCheck;
         this.store = store;
         this.reloader = reloader;
         this.fonts = fonts;
@@ -109,10 +112,13 @@ public class AdminController {
         return ResponseEntity.noContent().build();
     }
 
-    /** Administrerade alias plus de inbyggda från konfigurationen (som inte kan tas bort här). */
+    /**
+     * Administrerade alias plus de inbyggda från konfigurationen (som inte kan tas bort här), och
+     * alias vars målfont saknas.
+     */
     @GetMapping("/admin/api/aliases")
     public Map<String, Object> aliases() {
-        return Map.of("custom", store.aliases(), "effective", fonts.aliases());
+        return Map.of("custom", store.aliases(), "effective", fonts.aliases(), "missing", aliasCheck.missing());
     }
 
     @PutMapping("/admin/api/aliases")

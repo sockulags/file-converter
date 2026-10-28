@@ -59,8 +59,17 @@ class ConversionControllerTest {
 
     private final PdfaValidator validator = new PdfaValidator();
 
+    /**
+     * Villkor för integrationstesterna. Med {@code REQUIRE_LIBREOFFICE=true} (som i CI) fallerar de i
+     * stället för att hoppas över när LibreOffice saknas, så att ett trasigt CI inte ser grönt ut.
+     */
     static boolean libreOfficeInstalled() {
-        return new java.io.File("/usr/bin/soffice").canExecute() || new java.io.File("/usr/lib/libreoffice/program/soffice").canExecute();
+        boolean installed = new java.io.File("/usr/bin/soffice").canExecute()
+                || new java.io.File("/usr/lib/libreoffice/program/soffice").canExecute();
+        if (!installed && Boolean.parseBoolean(System.getenv("REQUIRE_LIBREOFFICE"))) {
+            throw new IllegalStateException("REQUIRE_LIBREOFFICE=true men LibreOffice (soffice) saknas.");
+        }
+        return installed;
     }
 
     @Test
@@ -113,7 +122,8 @@ class ConversionControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-Pdfa-Level", "PDF/A-1b"))
                 .andExpect(header().string("X-Pdfa-Compliant", "false"))
-                .andExpect(header().string("X-Pdfa-Problems", "UNTAGGED"))
+                // Fler orsaker kan tillkomma med andra LibreOffice-versioner; UNTAGGED är det som måste finnas.
+                .andExpect(header().string("X-Pdfa-Problems", org.hamcrest.Matchers.containsString("UNTAGGED")))
                 .andReturn().getResponse().getContentAsByteArray();
 
         assertCompliant(pdf, PdfaLevel.PDFA_1B);
@@ -631,11 +641,21 @@ class ConversionControllerTest {
         assertCompliant(merged, PdfaLevel.PDFA_3B);
     }
 
+    /** Samma form som Gotenbergs /health (F6 i gap-analysen), med LibreOffice-versionen som tillägg. */
     @Test
     void healthReportsLibreOffice() throws Exception {
         mvc.perform(get("/health"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.details.libreoffice").value("up"));
+                .andExpect(jsonPath("$.status").value("up"))
+                .andExpect(jsonPath("$.details.libreoffice.status").value("up"))
+                .andExpect(jsonPath("$.details.libreoffice.timestamp").isString())
+                .andExpect(jsonPath("$.details.libreoffice.version").value(org.hamcrest.Matchers.startsWith("LibreOffice ")));
+    }
+
+    /** Fontpaketen i imagen (och i CI) ska ge alla inbyggda alias en målfont, annars får mallarna fel font. */
+    @Test
+    void builtInFontAliasesHaveTargets(@Autowired se.fileconverter.assets.FontAliasCheck aliases) {
+        assertThat(aliases.missing()).isEmpty();
     }
 
     private byte[] toPdfa1a(String fixture) throws Exception {

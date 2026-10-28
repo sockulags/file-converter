@@ -152,6 +152,12 @@ public class ChromiumConverter implements InitializingBean, DisposableBean {
         return current != null && current.process().isAlive() && current.client().isOpen() ? "up" : "down";
     }
 
+    /** Webbläsarens version, t.ex. "HeadlessChrome/153.0.8010.12", eller null om den inte är igång. */
+    public String version() {
+        Browser current = browser;
+        return current == null ? null : current.version();
+    }
+
     public boolean isAvailable() {
         return config.enabled() && binary != null;
     }

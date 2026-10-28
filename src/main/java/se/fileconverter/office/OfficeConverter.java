@@ -1,13 +1,19 @@
 package se.fileconverter.office;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -17,6 +23,7 @@ import org.jodconverter.core.office.OfficeException;
 import org.jodconverter.core.office.OfficeManager;
 import org.jodconverter.local.LocalConverter;
 import org.jodconverter.local.office.LocalOfficeManager;
+import org.jodconverter.local.office.LocalOfficeUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -39,6 +46,10 @@ import se.fileconverter.pdfa.PdfaNormalizer;
  *
  * <p>LibreOffice läser fonter via fontconfig när processen startar. Processerna startas därför med
  * en egen fontconfig-fil som tar med de uppladdade fonterna, och poolen startas om när de ändras.
+ *
+ * <p>Mätvärden: {@code converter_libreoffice_up} och {@code converter_libreoffice_restarts_total{cause}}.
+ * {@code cause} är {@code fonter} (ändrade fonter), {@code krasch} eller {@code tidsgrans}; i de två
+ * senare startar JODConverter en ny process. Omstarter efter {@code max-tasks-per-process} räknas inte.
  */
 @Component
 public class OfficeConverter implements InitializingBean, DisposableBean {
@@ -46,7 +57,10 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
     private static final Logger log = LoggerFactory.getLogger(OfficeConverter.class);
 
     private final ConverterProperties.Office config;
+    private final ConverterProperties.Logging.FileNames fileNames;
     private final List<String> fontDirs;
+    private final MeterRegistry registry;
+    private volatile String version = "okand";
     /** Konverteringar delar läslåset; omstart tar skrivlåset och väntar ut pågående jobb. */
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
     private volatile OfficeManager officeManager;
@@ -68,11 +82,16 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
             </oor:items>
             """;
 
-    public OfficeConverter(ConverterProperties properties, AssetStore store) {
+    public OfficeConverter(ConverterProperties properties, AssetStore store, MeterRegistry registry) {
         this.config = properties.office();
+        this.fileNames = properties.fileNames();
+        this.registry = registry;
         List<String> dirs = new ArrayList<>(properties.fonts().dirs());
         dirs.add(store.fontsDir().toString());
         this.fontDirs = List.copyOf(dirs);
+        Gauge.builder("converter.libreoffice.up", () -> !config.enabled() || isRunning() ? 1 : 0)
+                .description("1 när LibreOffice-poolen är igång (eller avstängd i konfigurationen), annars 0")
+                .register(registry);
     }
 
     @Override
@@ -80,16 +99,73 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         if (!config.enabled()) {
             return;
         }
+        version = readVersion();
+        log.info("LibreOffice-version: {}", version);
         fontconfigFile = writeFontconfig();
         profileDir = writeProfile();
         officeManager = start();
     }
 
+    /**
+     * Stoppas efter att webbservern väntat ut pågående anrop (graceful shutdown). Väntar ändå ut
+     * exporter som pågår, t.ex. från en konvertering som fått 503 för en tidsgräns men inte avbrutits.
+     */
     @Override
     public void destroy() throws OfficeException {
-        if (officeManager != null) {
-            officeManager.stop();
+        if (officeManager == null) {
+            return;
         }
+        boolean locked = false;
+        try {
+            locked = lock.writeLock().tryLock(config.taskTimeout().toMillis(), TimeUnit.MILLISECONDS);
+            if (!locked) {
+                log.warn("LibreOffice stoppas medan exporter fortfarande pågår");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        try {
+            officeManager.stop();
+        } finally {
+            if (locked) {
+                lock.writeLock().unlock();
+            }
+        }
+    }
+
+    /** LibreOffice-versionen som den rapporteras av {@code soffice --version}, t.ex. "LibreOffice 26.2.0.3 …". */
+    public String version() {
+        return version;
+    }
+
+    private String readVersion() {
+        try {
+            File home = config.home() != null && !config.home().isBlank() ? new File(config.home())
+                    : LocalOfficeUtils.getDefaultOfficeHome();
+            if (home == null) {
+                return "okand";
+            }
+            File executable = LocalOfficeUtils.getOfficeExecutable(home);
+            Process process = new ProcessBuilder(executable.getPath(), "--version").redirectErrorStream(true).start();
+            if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return "okand";
+            }
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+            return output.isEmpty() ? "okand" : output.lines().findFirst().orElse("okand");
+        } catch (IOException | RuntimeException e) {
+            log.warn("Kunde inte läsa LibreOffice-versionen: {}", e.getMessage());
+            return "okand";
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "okand";
+        }
+    }
+
+    private void restarted(String cause) {
+        Counter.builder("converter.libreoffice.restarts")
+                .description("Omstarter av LibreOffice-processer")
+                .tag("cause", cause).register(registry).increment();
     }
 
     public boolean isEnabled() {
@@ -109,6 +185,7 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         lock.writeLock().lock();
         try {
             log.info("Startar om LibreOffice för att läsa in ändrade fonter");
+            restarted("fonter");
             try {
                 officeManager.stop();
             } catch (OfficeException | RuntimeException e) {
@@ -206,7 +283,8 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         if (!options.pdfa().allowsTransparency() && PdfaNormalizer.hasTransparency(pdf)) {
             // PDF/A-1 tillåter ingen transparens. LibreOffice plattar själv ut den i PDF/A-1-läge, men tar
             // då bort taggarna: resultatet kan bli PDF/A-1b men inte 1a. Bättre än en ogiltig fil.
-            log.info("{} innehåller transparens; exporterar om i PDF/A-1-läge, som plattar ut den", input.getFileName());
+            log.info("{} innehåller transparens; exporterar om i PDF/A-1-läge, som plattar ut den",
+                    fileNames.describe(input.getFileName().toString()));
             filterData.put("SelectPdfVersion", 1);
             pdf = export(input, inputFormat, options, filterData);
         }
@@ -247,8 +325,13 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
                 return exportOnce(input, inputFormat, options, filterData);
             } catch (OfficeException e) {
                 Failure failure = classify(e);
+                if (failure == Failure.CRASH || failure == Failure.TIMEOUT) {
+                    // JODConverter startar om processen efter en krasch eller tidsgräns.
+                    restarted(failure == Failure.CRASH ? "krasch" : "tidsgrans");
+                }
                 if (failure == Failure.CRASH && attempt == 1) {
-                    log.warn("LibreOffice kraschade under konverteringen av {}; försöker igen med en ny process", input.getFileName());
+                    log.warn("LibreOffice kraschade under konverteringen av {}; försöker igen med en ny process",
+                            fileNames.describe(input.getFileName().toString()));
                     continue;
                 }
                 throw failed(failure, input, e);

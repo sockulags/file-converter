@@ -22,7 +22,6 @@ import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
@@ -61,11 +60,13 @@ public class ConversionController {
     private final PdfaService pdfa;
     private final PdfPostProcessor postProcessor;
     private final ChromiumConverter chromium;
+    private final Timeouts timeouts;
 
     public ConversionController(OfficeConverter office, HtmlConverter html, PdfMerger merger, PdfaService pdfa,
-            PdfPostProcessor postProcessor, ChromiumConverter chromium) {
+            PdfPostProcessor postProcessor, ChromiumConverter chromium, Timeouts timeouts) {
         this.postProcessor = postProcessor;
         this.chromium = chromium;
+        this.timeouts = timeouts;
         this.office = office;
         this.html = html;
         this.merger = merger;
@@ -73,18 +74,6 @@ public class ConversionController {
     }
 
     record Output(String name, byte[] pdf, PdfaValidator.Report report) {
-    }
-
-    /**
-     * 503 tills LibreOffice-poolen är igång, så att Kubernetes inte skickar trafik för tidigt. Chromium
-     * startas om vid behov vid nästa rendering och påverkar därför inte svaret, men syns i detaljerna.
-     */
-    @GetMapping("/health")
-    public ResponseEntity<Map<String, Object>> health() {
-        String libreoffice = !office.isEnabled() ? "disabled" : office.isRunning() ? "up" : "down";
-        boolean up = !"down".equals(libreoffice);
-        return ResponseEntity.status(up ? 200 : 503).body(Map.of("status", up ? "up" : "down",
-                "details", Map.of("libreoffice", libreoffice, "chromium", chromium.status())));
     }
 
     @ConcurrencyLimit.Limited
@@ -135,9 +124,10 @@ public class ConversionController {
             }
             HtmlConverter.Options htmlOptions = new HtmlConverter.Options(pageCss(request, options.bool("preferCssPageSize", false)),
                     options.bool("printBackground", false), options.bool("generateDocumentOutline", false));
-            byte[] pdf = html.toPdf(ws.dir(), htmlOptions, level);
+            byte[] pdf = timeouts.supply(Timeouts.Stage.HTML, () -> html.toPdf(ws.dir(), htmlOptions, level));
             if (ranges != null) {
-                pdf = postProcessor.selectPages(pdf, ranges);
+                byte[] rendered = pdf;
+                pdf = timeouts.supply(Timeouts.Stage.POST_PROCESS, () -> postProcessor.selectPages(rendered, ranges));
             }
             return respond(request, options, finish(List.of(new Output("index", pdf, null)), options, level, strict), engineHeaders);
         }
@@ -201,17 +191,18 @@ public class ConversionController {
         Map<String, Object> metadata = options.metadata();
         boolean flatten = options.flatten();
         return outputs.stream().map(output -> {
-            byte[] pdf = postProcessor.apply(output.pdf(), metadata, flatten);
+            byte[] pdf = timeouts.supply(Timeouts.Stage.POST_PROCESS, () -> postProcessor.apply(output.pdf(), metadata, flatten));
             if (level.isEmpty()) {
                 return new Output(output.name(), pdf, null);
             }
             if (tryTagged && level.get().part() >= 2 && !level.get().requiresTagging()) {
-                PdfaService.Result tagged = pdfa.convert(pdf, PdfaLevel.of(level.get().part(), "A"), false);
+                PdfaService.Result tagged = timeouts.supply(Timeouts.Stage.PDFA,
+                        () -> pdfa.convert(pdf, PdfaLevel.of(level.get().part(), "A"), false));
                 if (tagged.report().compliant()) {
                     return new Output(output.name(), tagged.pdf(), tagged.report());
                 }
             }
-            PdfaService.Result result = pdfa.convert(pdf, level.get(), strict);
+            PdfaService.Result result = timeouts.supply(Timeouts.Stage.PDFA, () -> pdfa.convert(pdf, level.get(), strict));
             return new Output(output.name(), result.pdf(), result.report());
         }).toList();
     }

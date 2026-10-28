@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.web.multipart.MultipartHttpServletRequest;
 import se.fileconverter.chromium.ChromiumConverter;
 import se.fileconverter.observability.ConversionRecord;
 import se.fileconverter.office.OfficeOptions;
@@ -67,7 +68,17 @@ public final class GotenbergOptions {
             "generateDocumentOutline", "nativePageRanges", "converterEngine");
     private static final Set<String> UNSUPPORTED_EVERYWHERE = Set.of("splitMode", "splitSpan", "splitUnify", "downloadFrom");
     /** Övriga Gotenberg 8-fält som saknar motsvarighet här. De ignoreras men räknas med sitt namn. */
-    private static final Set<String> OTHER_GOTENBERG = Set.of("updateIndexes", "userPassword", "ownerPassword");
+    private static final Set<String> OTHER_GOTENBERG = Set.of("updateIndexes");
+    /**
+     * Fält som skulle ge ett annat resultat än klienten väntar sig om de ignorerades: lösenorden ger en
+     * krypterad fil i Gotenberg, här skulle filen bli okrypterad. Avvisas om de har ett värde.
+     */
+    private static final Set<String> REJECT_IF_PRESENT = Set.of("userPassword", "ownerPassword");
+    /** Vattenstämpel och stämpel (Gotenberg 8, även LibreOffice-fälten nativeWatermark*), oavsett exakt fältnamn. */
+    private static final List<String> REJECTED_PREFIXES = List.of("watermark", "stamp", "nativeWatermark", "nativeTiledWatermark");
+    /** Filfält med särskild betydelse i Gotenberg. Här skulle filerna annars konverteras som dokument. */
+    private static final Set<String> REJECTED_FILE_FIELDS = Set.of("embeds", "watermark", "stamp");
+    private static final String WEBHOOK_PREFIX = "Gotenberg-Webhook-";
     /** Gotenbergs huvuden. Andra huvuden som börjar på {@code Gotenberg-} räknas som okända. */
     private static final Set<String> GOTENBERG_HEADERS = Set.of("Gotenberg-Trace", "Gotenberg-Output-Filename",
             "Gotenberg-Webhook-Url", "Gotenberg-Webhook-Error-Url", "Gotenberg-Webhook-Method",
@@ -120,9 +131,30 @@ public final class GotenbergOptions {
                     || (route == Route.PDFENGINES && field.equals("merge"));
             usage.put(field, known ? "stods" : "ignoreras");
         }
-        if (request.getHeader("Gotenberg-Webhook-Url") != null) {
-            throw unsupported("Gotenberg-Webhook-Url",
-                    "Webhooks (asynkron konvertering) stöds inte. Anropa utan Gotenberg-Webhook-Url och vänta på svaret.");
+        if (request instanceof MultipartHttpServletRequest multipart) {
+            for (String field : multipart.getMultiFileMap().keySet()) {
+                if (REJECTED_FILE_FIELDS.contains(field)) {
+                    throw unsupported(field, "Filfältet '" + field + "' stöds inte. "
+                            + (field.equals("embeds") ? "PDF/A-1 tillåter inga bifogade filer." : "Vattenstämplar och stämplar stöds inte."));
+                }
+            }
+        }
+        List<String> webhooks = usage.keySet().stream().filter(name -> name.regionMatches(true, 0, WEBHOOK_PREFIX, 0, WEBHOOK_PREFIX.length())).toList();
+        if (!webhooks.isEmpty()) {
+            webhooks.forEach(name -> usage.put(name, "avvisas"));
+            throw unsupported(webhooks.getFirst(),
+                    "Webhooks (asynkron konvertering) stöds inte. Anropa utan Gotenberg-Webhook-* och vänta på svaret.");
+        }
+        for (String field : REJECT_IF_PRESENT) {
+            String value = request.getParameter(field);
+            if (value != null && !value.isBlank()) {
+                throw unsupported(field, "Kryptering (userPassword, ownerPassword) stöds inte. Filen skulle annars returneras okrypterad.");
+            }
+        }
+        for (String field : usage.keySet()) {
+            if (REJECTED_PREFIXES.stream().anyMatch(prefix -> field.regionMatches(true, 0, prefix, 0, prefix.length()))) {
+                throw unsupported(field, "Vattenstämplar och stämplar ('" + field + "') stöds inte.");
+            }
         }
         if (bool("pdfua", false)) {
             throw unsupported("pdfua", "PDF/UA stöds inte. Använd pdfa=PDF/A-1a, som också kräver taggad, tillgänglig PDF.");
@@ -324,7 +356,7 @@ public final class GotenbergOptions {
     private static Set<String> knownNames() {
         Set<String> names = new java.util.HashSet<>();
         List.of(COMMON, LIBREOFFICE, LIBREOFFICE_BOOLEANS.keySet(), CHROMIUM, CHROMIUM_ONLY, NO_NETWORK, UNSUPPORTED_EVERYWHERE,
-                OTHER_GOTENBERG, GOTENBERG_HEADERS).forEach(names::addAll);
+                OTHER_GOTENBERG, REJECT_IF_PRESENT, REJECTED_FILE_FIELDS, GOTENBERG_HEADERS).forEach(names::addAll);
         names.add("merge");
         return Set.copyOf(names);
     }

@@ -194,7 +194,7 @@ class ChromiumRouteTest {
 
     @Test
     void healthShowsChromium() throws Exception {
-        mvc.perform(get("/health")).andExpect(jsonPath("$.details.chromium").value("up"));
+        mvc.perform(get("/health")).andExpect(jsonPath("$.details.chromium.status").value("up"));
     }
 
     private static MockMultipartFile html(String name, String body) {
