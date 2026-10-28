@@ -26,6 +26,8 @@ import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import se.fileconverter.config.ConverterProperties;
 import se.fileconverter.observability.ConversionRecord;
 import se.fileconverter.observability.ConversionTelemetry;
@@ -58,6 +60,7 @@ public class ConcurrencyLimit extends OncePerRequestFilter {
     static final String TESTBANK_PATH = "/admin/api/check";
     private static final String RETRY_AFTER = "10";
     private static final ThreadLocal<Permit> CURRENT = new ThreadLocal<>();
+    private static final Logger log = LoggerFactory.getLogger(ConcurrencyLimit.class);
 
     private final Semaphore permits;
     private final int max;
@@ -76,6 +79,12 @@ public class ConcurrencyLimit extends OncePerRequestFilter {
         ConverterProperties.Limits limits = properties.limits();
         this.max = limits.maxConcurrent() > 0 ? limits.maxConcurrent() : Runtime.getRuntime().availableProcessors();
         this.maxQueued = limits.maxQueued();
+        if (limits.maxConcurrent() > 0) {
+            log.info("Högst {} samtidiga konverteringar", max);
+        } else {
+            // Utan CPU-gräns eller -XX:ActiveProcessorCount blir det nodens alla kärnor. Se docs/kapacitet.md.
+            log.warn("CONVERTER_LIMITS_MAX_CONCURRENT är inte satt: högst {} samtidiga konverteringar (antal processorer)", max);
+        }
         this.permits = new Semaphore(max, true);
         this.queueTimeoutMillis = limits.queueTimeout().toMillis();
         Gauge.builder("converter.inflight", () -> max - permits.availablePermits())

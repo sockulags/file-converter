@@ -234,8 +234,13 @@ curl -u admin:$PASS -o resurser.zip http://localhost:3000/admin/api/export
 
 ## Övervakning
 
-Mätvärden finns på en egen port (`9090`) i Prometheus-format: `/actuator/prometheus`. Podden har
-annoteringar för Prometheus.
+Mätvärden finns på en egen port (`9090`) i Prometheus-format: `/actuator/prometheus`. Skrapning,
+larm och dashboard ligger i kustomize-komponenten `deploy/k8s/components/monitoring` (PodMonitor,
+PrometheusRule och en Grafana-dashboard som ConfigMap med etiketten `grafana_dashboard`), som
+båda overlays tar med. Den kräver Prometheus Operator. Utan den används
+`deploy/k8s/components/prometheus-annotations` (annoteringarna `prometheus.io/*`) i stället, och
+larmen och dashboarden (`dashboard/file-converter.json`) läggs in för hand. Vad larmen betyder och
+vad man gör står i [runbook](docs/runbook.md).
 
 | Mätvärde | Taggar | |
 |---|---|---|
@@ -264,8 +269,8 @@ annoteringar för Prometheus.
 Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`, `ms`, `filer`,
 `ej_stod`, `motor`) med spårnings-id, också när anropet avvisas innan det når controllern (`503 BUSY`, för stora
 filer, inte multipart). `ej_stod` listar fält som ignorerades eller avvisades, med klientens egna namn.
-JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`. Fälten blir då egna
-fält i JSON-raden.
+JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`
+(påslaget i manifesten). Fälten blir då egna fält i JSON-raden, och spårnings-id:t står i fältet `traceId`.
 
 **Filnamn.** Kundernas filnamn kan innehålla personuppgifter. `CONVERTER_LOGGING_FILE_NAMES` styr hur de
 skrivs i loggar och i administrationens lista över fel: `extension` (standard, t.ex. `*.docx (12 kB)`),
@@ -347,6 +352,10 @@ Prometheus-måtten ovan.
 - Två uppladdade filer med samma namn avvisas (`400`) i stället för att den ena tyst skriver över den andra.
 - Dolda annoteringar (dolda fält, interna kommentarer) tas bort, eftersom PDF/A-1 annars kräver att de visas.
 - Administrationens inloggning kontrolleras på vilken funktion anropet hamnar i, inte på URL:en.
+- `tini` är PID 1 i imagen och tar hand om föräldralösa LibreOffice-processer, så att de inte blir
+  zombier. JVM:en avslutas vid `OutOfMemoryError` (`-XX:+ExitOnOutOfMemoryError`) i stället för att
+  fortsätta i ett osäkert läge, och Kubernetes startar om podden.
+- Basimagen är låst på digest, och Dependabot föreslår nya.
 
 ## Kända begränsningar
 
@@ -397,6 +406,18 @@ Produktion väntar där på att testmiljön är frisk (`dependsOn`).
   `file-converter/klient=true` (port 3000) och `file-converter/metrics=true` (port 9090, Prometheus).
   Märk klienternas namespaces innan bytet, annars får de inget svar:
   `kubectl label namespace <namespace> file-converter/klient=true`
+- **Resurser:** pool, samtidighet, CPU och minne är satta tillsammans (2 LibreOffice-processer,
+  4 samtidiga anrop, 2 CPU, 3 GiB med request = limit). Ändra dem tillsammans enligt
+  [kapacitet](docs/kapacitet.md). Tjänsten loggar minnesbudgeten vid start och varnar om den inte ryms.
+- **Pod-säkerhet:** klarar Pod Security Standards `restricted`: icke-root (uid/gid 1001), seccomp
+  `RuntimeDefault`, inga capabilities och skrivskyddat rootfs. Skrivbara är `/tmp`, `/home/converter`
+  (emptyDir) och `/data` (den delade volymen, skrivbar via `fsGroup: 1001`; se `pvc.yaml` för
+  lagring som inte stöder fsGroup).
+- **Tillgänglighet:** PodDisruptionBudget (högst en podd i taget), spridning över noder och zoner, och
+  minst tre repliker i prod. HPA skalar på CPU, upp snabbt och ner långsamt.
+
+Drift: [runbook](docs/runbook.md), [kapacitet och lasttest](docs/kapacitet.md) och
+[byte från Gotenberg](docs/byte-fran-gotenberg.md).
 
 ### Konfiguration
 
@@ -407,11 +428,12 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 | `CONVERTER_OFFICE_POOL_SIZE` | `2` | LibreOffice-processer = samtidiga Office-konverteringar |
 | `CONVERTER_OFFICE_TASK_TIMEOUT` | `120s` | |
 | `CONVERTER_OFFICE_MAX_TASKS_PER_PROCESS` | `200` | Processen startas om efter så många jobb |
+| `CONVERTER_OFFICE_PROCESS_MEMORY` | `512MB` | Uppskattat minne per LibreOffice-process, för varningen om minnesbudgeten vid start |
 | `CONVERTER_PDFA_STRICT` | `false` | `false` = bästa försök (som Gotenberg), `true` = avvisa med 422 |
 | `CONVERTER_ADMIN_PASSWORD` | tomt | Aktiverar `/admin` |
 | `CONVERTER_ASSETS_DIR` | `/data` (imagen) | Uppladdade fonter och alias |
 | `CONVERTER_ASSETS_POLL_INTERVAL` | `30s` | Hur ofta andra poddars ändringar plockas upp |
-| `CONVERTER_LIMITS_MAX_CONCURRENT` | antal processorer | Samtidiga konverteringar per instans. Fler köar |
+| `CONVERTER_LIMITS_MAX_CONCURRENT` | antal processorer | Samtidiga konverteringar per instans. Fler köar. Sätt alltid i Kubernetes (manifesten: `4`), annars blir det nodens kärnor |
 | `CONVERTER_LIMITS_QUEUE_TIMEOUT` | `60s` | Därefter `503` med `Retry-After` |
 | `CONVERTER_CHROMIUM_ENABLED` | `true` | Av = mallar som kräver Chromium får `503 UNAVAILABLE` |
 | `CONVERTER_CHROMIUM_PATH` | tomt | `chrome-headless-shell` eller `chrome`. Tomt = `/opt/chrome-headless-shell` m.fl. kända platser |
@@ -448,6 +470,12 @@ om LibreOffice saknas. CI kör testerna på Java 25, samma version som imagen.
 Varje PDF/A-svar i integrationstesterna valideras om med veraPDF och kontrolleras för innehåll i
 strukturträdet. Testfilerna skapas med `scripts/make_fixtures.py` (kräver python-docx, Pillow och
 fonttools). Testfonterna är omdöpta delmängder av DejaVu Sans.
+
+Lasttest mot en körande instans, med bara curl och xargs (se [kapacitet](docs/kapacitet.md)):
+
+```bash
+ANTAL=900 TAKT=1 PARALLELLT=10 scripts/lasttest.sh http://localhost:3000
+```
 
 ## Licenser
 

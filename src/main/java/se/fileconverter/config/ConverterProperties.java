@@ -6,6 +6,7 @@ import java.util.Locale;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.ConstructorBinding;
+import org.springframework.util.unit.DataSize;
 
 @ConfigurationProperties("converter")
 public record ConverterProperties(Office office, Fonts fonts, Pdfa pdfa, Assets assets, Admin admin, Limits limits,
@@ -27,6 +28,8 @@ public record ConverterProperties(Office office, Fonts fonts, Pdfa pdfa, Assets 
 
     /**
      * LibreOffice-poolen. Varje process hanterar en konvertering åt gången.
+     *
+     * @param processMemory uppskattat minne per LibreOffice-process, för kontrollen av minnesbudgeten vid start
      */
     public record Office(
             boolean enabled,
@@ -34,7 +37,8 @@ public record ConverterProperties(Office office, Fonts fonts, Pdfa pdfa, Assets 
             int poolSize,
             Duration taskTimeout,
             Duration queueTimeout,
-            int maxTasksPerProcess) {
+            int maxTasksPerProcess,
+            DataSize processMemory) {
     }
 
     /**

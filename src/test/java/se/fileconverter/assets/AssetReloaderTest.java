@@ -28,7 +28,7 @@ class AssetReloaderTest {
     private ConverterProperties properties(Duration jitter) throws Exception {
         Path fixtures = Paths.get(AssetReloaderTest.class.getResource("/fixtures/FilkonverterTest-Regular.ttf").toURI()).getParent();
         return new ConverterProperties(
-                new ConverterProperties.Office(false, "", 1, Duration.ofSeconds(1), Duration.ofSeconds(1), 1),
+                new ConverterProperties.Office(false, "", 1, Duration.ofSeconds(1), Duration.ofSeconds(1), 1, null),
                 new ConverterProperties.Fonts(List.of(fixtures.toString()), Map.of("Garamond", "Filkonverter Test", "Arial", "Finns Inte")),
                 null, new ConverterProperties.Assets(assets.toString(), Duration.ofHours(1), jitter), null, null);
     }
