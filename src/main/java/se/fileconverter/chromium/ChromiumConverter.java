@@ -569,7 +569,9 @@ public class ChromiumConverter implements InitializingBean, DisposableBean {
         builder.environment().put("HOME", userData.toString());
         Process process = builder.start();
         CompletableFuture<String> endpoint = new CompletableFuture<>();
-        Thread.ofVirtual().name("chromium-logg").start(() -> {
+        // En vanlig tråd: läsningen blockerar så länge webbläsaren lever, och en virtuell tråd skulle då
+        // låsa en bärartråd som andra virtuella trådar (t.ex. tidsgränserna) behöver.
+        Thread.ofPlatform().daemon().name("chromium-logg").start(() -> {
             try (BufferedReader out = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
                 for (String line = out.readLine(); line != null; line = out.readLine()) {
                     Matcher matcher = DEVTOOLS_URL.matcher(line);
