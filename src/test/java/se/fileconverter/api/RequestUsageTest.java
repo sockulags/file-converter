@@ -81,6 +81,39 @@ class RequestUsageTest {
                 .isEqualTo(webhook + 1);
     }
 
+    /** Gotenberg-fält som skulle ge ett annat resultat än klienten väntar sig avvisas i stället för att ignoreras. */
+    @Test
+    void encryptionWatermarksEmbedsAndAllWebhookHeadersAreRejected() throws Exception {
+        double password = count("converter.request.fields", "route", "chromium-html", "field", "userPassword", "handling", "avvisas");
+        double embeds = count("converter.request.fields", "route", "chromium-html", "field", "embeds", "handling", "avvisas");
+
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("userPassword", "hemligt"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("okrypterad")));
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("ownerPassword", "hemligt"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("watermarkSource", "text"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("stampExpression", "Utkast"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html())
+                        .file(new MockMultipartFile("embeds", "faktura.xml", "application/xml", "<x/>".getBytes(StandardCharsets.UTF_8))))
+                .andExpect(status().isBadRequest());
+        for (String header : new String[] {"Gotenberg-Webhook-Method", "Gotenberg-Webhook-Extra-Http-Headers", "Gotenberg-Webhook-Nagot-Nytt"}) {
+            mvc.perform(multipart("/forms/chromium/convert/html").file(html()).header(header, "x"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.reason").value("UNSUPPORTED_OPTION"));
+        }
+        // Tomma lösenord betyder ingen kryptering, också i Gotenberg.
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("userPassword", ""))
+                .andExpect(status().isOk());
+
+        assertThat(count("converter.request.fields", "route", "chromium-html", "field", "userPassword", "handling", "avvisas"))
+                .isEqualTo(password + 1);
+        assertThat(count("converter.request.fields", "route", "chromium-html", "field", "embeds", "handling", "avvisas"))
+                .isEqualTo(embeds + 1);
+    }
+
     @Test
     void unsupportedPdfaValuesDoNotBecomeNewSeries() throws Exception {
         double invalid = count("converter.conversions", "route", "chromium-html", "pdfa", "ogiltig", "outcome", "avvisad");
