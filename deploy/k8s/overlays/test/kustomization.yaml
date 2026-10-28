@@ -4,6 +4,10 @@ kind: Kustomization
 namespace: file-converter-test
 resources:
   - ../../base
+# PodMonitor, larm och dashboard. Kräver Prometheus Operator; utan den:
+# ../../components/prometheus-annotations i stället.
+components:
+  - ../../components/monitoring
 images:
   - name: file-converter
     newName: registry.example.com/plattform/file-converter

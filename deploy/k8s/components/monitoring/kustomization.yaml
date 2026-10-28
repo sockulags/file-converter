@@ -1,0 +1,21 @@
+# Skrapning, larm och dashboard. Kräver Prometheus Operator (CRD:erna PodMonitor och PrometheusRule).
+# Finns de inte i klustret: ta bort komponenten ur overlayn och använd components/prometheus-annotations,
+# och lägg in larmen och dashboarden för hand (prometheusrule.yaml, dashboard/file-converter.json).
+#
+# Prometheus väljer ofta PodMonitor och PrometheusRule på en etikett (t.ex. release: <namn>). Lägg i
+# så fall till den i overlayn med labels: eller en patch.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - podmonitor.yaml
+  - prometheusrule.yaml
+# Grafanas sidecar läser ConfigMaps med etiketten grafana_dashboard. Den måste söka i tjänstens
+# namespace (t.ex. sidecar.dashboards.searchNamespace: ALL), annars importeras JSON-filen för hand.
+configMapGenerator:
+  - name: file-converter-dashboard
+    files:
+      - dashboard/file-converter.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"

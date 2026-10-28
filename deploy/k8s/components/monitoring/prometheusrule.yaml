@@ -1,0 +1,192 @@
+# Larm för file-converter. Trösklarna är exempel: justera dem efter lasttestet och de första
+# veckorna i drift (docs/kapacitet.md). Varje larm pekar på sitt avsnitt i docs/runbook.md, och
+# larmen med severity: critical är också kriterier för rollback till Gotenberg
+# (docs/byte-fran-gotenberg.md).
+#
+# Uttrycken grupperas per namespace. Hamnar test och prod i samma Prometheus utvärderar båda
+# reglerna båda miljöerna, och Alertmanager slår ihop de identiska larmen.
+# route="testbank" är körningar i administrationens testbänk och räknas inte.
+# kube_*-måtten kommer från kube-state-metrics.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: file-converter
+  labels:
+    app: file-converter
+spec:
+  groups:
+    - name: file-converter.konverteringar
+      rules:
+        - alert: FileConverterFelkvotHog
+          # Utfallet fel = 5xx: överlast, LibreOffice-tidsgräns eller -krasch, internt fel.
+          expr: |
+            (
+              sum by (namespace) (rate(converter_conversions_total{outcome="fel", route!="testbank"}[10m]))
+              /
+              sum by (namespace) (rate(converter_conversions_total{route!="testbank"}[10m]))
+            ) > 0.02
+            and sum by (namespace) (rate(converter_conversions_total{route!="testbank"}[10m])) > 0.01
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "file-converter: {{ $value | humanizePercentage }} av anropen ger 5xx"
+            description: "Mer än 2 % av konverteringarna i {{ $labels.namespace }} slutar med utfallet fel (5xx) de senaste 10 minuterna."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#felkvot
+        - alert: FileConverterUnderkandaPdfa
+          # Bästa försök-läget: filen returneras men klarar inte PDF/A (X-Pdfa-Compliant: false).
+          expr: |
+            (
+              sum by (namespace, route) (rate(converter_conversions_total{outcome="underkand", route!="testbank"}[30m]))
+              /
+              sum by (namespace, route) (rate(converter_conversions_total{pdfa!="ingen", route!="testbank"}[30m]))
+            ) > 0.05
+            and sum by (namespace, route) (rate(converter_conversions_total{pdfa!="ingen", route!="testbank"}[30m])) > 0.005
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: {{ $value | humanizePercentage }} av PDF/A-filerna på {{ $labels.route }} är underkända"
+            description: "Mer än 5 % av anropen med pdfa på {{ $labels.route }} gav en fil som inte klarar valideringen. Se converter_pdfa_violations_total för vilka regler."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#underkanda-pdfa
+        - alert: FileConverterAvvisadeOkar
+          # 4xx: filen eller anropet kan inte hanteras. Efter bytet från Gotenberg ofta ett fält eller
+          # en PDF/A-nivå som inte stöds.
+          expr: |
+            (
+              sum by (namespace) (rate(converter_conversions_total{outcome="avvisad", route!="testbank"}[30m]))
+              /
+              sum by (namespace) (rate(converter_conversions_total{route!="testbank"}[30m]))
+            ) > 0.10
+            and sum by (namespace) (rate(converter_conversions_total{route!="testbank"}[30m])) > 0.005
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: {{ $value | humanizePercentage }} av anropen avvisas (4xx)"
+            description: "Mer än 10 % av anropen i {{ $labels.namespace }} avvisas. Se converter_rejections_total per reason."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#avvisade
+        - alert: FileConverterLatensHog
+          # Histogrammet slutar vid 30 s, så p95 kan inte bli högre än så. Tröskeln ligger under.
+          expr: |
+            histogram_quantile(0.95,
+              sum by (namespace, route, le) (rate(converter_conversion_duration_seconds_bucket{route!="testbank"}[10m]))
+            ) > 20
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: p95 för {{ $labels.route }} är {{ $value | humanizeDuration }}"
+            description: "95:e percentilen för {{ $labels.route }} i {{ $labels.namespace }} har legat över 20 s i 15 minuter."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#latens
+
+    - name: file-converter.overlast
+      rules:
+        - alert: FileConverterUpptagen
+          # 503 BUSY: samtidighetsgränsen eller LibreOffice-poolen var full längre än kötiden.
+          expr: sum by (namespace) (increase(converter_busy_total[10m])) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: {{ $value | humanize }} anrop fick 503 BUSY senaste 10 min"
+            description: "Poddarna i {{ $labels.namespace }} hinner inte med. Kontrollera HPA, CPU och poolstorlek."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#busy
+        - alert: FileConverterLibreOfficeFel
+          expr: |
+            sum by (namespace, reason) (increase(converter_rejections_total{reason=~"LIBREOFFICE_TIMEOUT|LIBREOFFICE_CRASHED|UNAVAILABLE"}[15m])) > 3
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: {{ $value | humanize }} × {{ $labels.reason }} senaste 15 min"
+            description: "LibreOffice har nått tidsgränsen, kraschat eller varit otillgängligt i {{ $labels.namespace }}."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#libreoffice
+
+    - name: file-converter.klienter
+      rules:
+        # Klienter som skickar något som Gotenberg klarar men inte den här tjänsten. Viktigast första
+        # veckorna efter bytet. Ignorerade fält larmar inte; se dashboarden.
+        - alert: FileConverterAvvisatFalt
+          expr: sum by (namespace, route, field) (increase(converter_request_fields_total{handling="avvisas"}[1h])) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: fältet {{ $labels.field }} avvisas på {{ $labels.route }}"
+            description: "Klienter skickar {{ $labels.field }}, som avvisas med 400. Se loggraden (ej_stod) för klientens egna namn."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#falt-och-routes
+        - alert: FileConverterOkandRoute
+          expr: sum by (namespace, route, method) (increase(converter_unknown_routes_total[1h])) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: {{ $labels.method }} {{ $labels.route }} finns inte här"
+            description: "Klienter anropar en Gotenberg-route som ger 404 här."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#falt-och-routes
+
+    - name: file-converter.poddar
+      rules:
+        - alert: FileConverterInteRedo
+          expr: sum by (namespace, pod) (kube_pod_status_ready{condition="false", pod=~"file-converter-.*"}) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: {{ $labels.pod }} har inte varit ready på 10 min"
+            description: "/health svarar inte 200, oftast för att LibreOffice inte startar."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#inte-redo
+        - alert: FileConverterNere
+          expr: |
+            sum by (namespace) (kube_deployment_status_replicas_available{deployment="file-converter"}) == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "file-converter: inga tillgängliga poddar i {{ $labels.namespace }}"
+            description: "Alla anrop misslyckas. Överväg rollback till Gotenberg."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#inte-redo
+        - alert: FileConverterSkrapasInte
+          expr: up{container="file-converter"} == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: Prometheus når inte {{ $labels.pod }}"
+            description: "Utan mätvärden fungerar inga andra larm. Kontrollera NetworkPolicy (file-converter/metrics=true) och port 9090."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#skrapas-inte
+        - alert: FileConverterOmstarter
+          # Även OutOfMemoryError (JVM:en avslutas) och OOMKilled (containerns minnesgräns).
+          expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{container="file-converter"}[30m])) > 2
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: {{ $labels.pod }} har startats om {{ $value | humanize }} gånger på 30 min"
+            description: "Se kubectl describe pod (Last State) och loggen från förra körningen (kubectl logs --previous)."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#omstarter
+        - alert: FileConverterOOMKilled
+          expr: |
+            sum by (namespace, pod) (kube_pod_container_status_last_terminated_reason{container="file-converter", reason="OOMKilled"}) > 0
+            and on (namespace, pod)
+            sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{container="file-converter"}[30m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: {{ $labels.pod }} dödades av minnesgränsen (OOMKilled)"
+            description: "Heap och LibreOffice-processer ryms inte i containerns minne. Se varningen Minnesbudget i loggen och docs/kapacitet.md."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#omstarter
+        - alert: FileConverterHpaPaMax
+          expr: |
+            sum by (namespace) (kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler="file-converter"})
+            >=
+            sum by (namespace) (kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler="file-converter"})
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "file-converter: HPA har stått på maxReplicas i 30 min"
+            description: "Det finns ingen marginal för fler anrop. Höj maxReplicas eller se över kapaciteten per podd."
+            runbook_url: https://github.com/OWNER/file-converter/blob/main/docs/runbook.md#hpa-pa-max

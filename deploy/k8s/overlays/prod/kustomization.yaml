@@ -5,11 +5,31 @@ kind: Kustomization
 namespace: file-converter
 resources:
   - ../../base
+# PodMonitor, larm och dashboard. Kräver Prometheus Operator; utan den:
+# ../../components/prometheus-annotations i stället.
+components:
+  - ../../components/monitoring
 images:
   - name: file-converter
     newName: registry.example.com/plattform/file-converter
     newTag: v0.1.0
 patches:
+  # Minst tre repliker: en podd kan tömmas (PodDisruptionBudget) och en kan krascha utan att
+  # tjänsten står på en enda podd.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: file-converter
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+  - target:
+      kind: Deployment
+      name: file-converter
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
   # Fontvolymen delas av alla repliker och kräver ReadWriteMany.
   - target:
       kind: PersistentVolumeClaim

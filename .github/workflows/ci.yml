@@ -60,6 +60,8 @@ jobs:
             kubectl kustomize "$overlay" > rendered.yaml
             grep -E '^kind:' rendered.yaml | sort | uniq -c
           done
+      - name: Dashboarden är giltig JSON
+        run: python3 -m json.tool deploy/k8s/components/monitoring/dashboard/file-converter.json > /dev/null
 
   # Publicerar imagen till ert registry. Hoppas över tills repo-variabeln REGISTRY är satt
   # (t.ex. registry.example.com/plattform), med hemligheterna REGISTRY_USERNAME och REGISTRY_PASSWORD.
