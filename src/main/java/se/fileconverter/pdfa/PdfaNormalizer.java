@@ -80,12 +80,15 @@ import org.springframework.stereotype.Component;
 import se.fileconverter.api.ConversionException;
 
 /**
- * Gör en befintlig PDF till PDF/A-1 utan att rendera om innehållet.
+ * Gör en befintlig PDF till PDF/A utan att rendera om innehållet.
  *
- * <p>Rättar det som går att rätta mekaniskt (metadata, färgprofil, CIDSet, bilder med alfakanal
- * via {@link TransparentImageFlattener}, otillåtna actions, xref-strömmar) och avvisar det som inte går att rätta utan att ändra hur
- * dokumentet ser ut: kryptering, signaturer, saknade fonter, verklig transparens och, för 1a,
- * avsaknad av taggstruktur. Resultatet ska alltid valideras efteråt.
+ * <p>Rättar det som går att rätta mekaniskt (metadata, färgprofil, CIDSet, otillåtna actions) och
+ * avvisar det som inte går att rätta utan att ändra hur dokumentet ser ut: kryptering, signaturer,
+ * saknade fonter och, för a-nivåerna, avsaknad av taggstruktur. Resultatet ska alltid valideras efteråt.
+ *
+ * <p>För PDF/A-1, som bygger på PDF 1.4, görs mer: bilder med alfakanal plattas ut via
+ * {@link TransparentImageFlattener}, JPEG2000, 16-bitarsbilder och ICC v4 görs om, xref-strömmar tas
+ * bort och verklig transparens avvisas. PDF/A-2 och 3 tillåter allt det, så där lämnas innehållet orört.
  */
 @Component
 public class PdfaNormalizer {
@@ -95,6 +98,9 @@ public class PdfaNormalizer {
     public static final long MAX_IMAGE_PIXELS = 40_000_000L;
     private static final Set<String> FORBIDDEN_ANNOTATIONS = Set.of("FileAttachment", "Sound", "Movie", "3D", "Screen", "RichMedia");
     private static final Set<String> FORBIDDEN_ACTIONS = Set.of("Launch", "Sound", "Movie", "ResetForm", "ImportData", "JavaScript");
+    /** En bfchar-rad i en ToUnicode-CMap som pekar på Symbol-fontens del av det privata området. */
+    private static final java.util.regex.Pattern SYMBOL_PUA =
+            java.util.regex.Pattern.compile("(<[0-9A-Fa-f]{2,4}>\\s*)<([Ff]0[2-9A-Fa-f][0-9A-Fa-f])>");
     private static final int ANNOT_INVISIBLE = 1, ANNOT_HIDDEN = 2, ANNOT_PRINT = 4, ANNOT_NO_VIEW = 32, ANNOT_TOGGLE_NO_VIEW = 256;
 
     /**
@@ -118,9 +124,11 @@ public class PdfaNormalizer {
         try (PDDocument doc = load(pdf)) {
             List<String> warnings = new ArrayList<>();
             PdfaLevel effective = rejectUnsupported(doc, level, bestEffort, warnings);
-            TransparentImageFlattener.flatten(doc);
-            int intentComponents = ensureOutputIntent(doc);
-            Pass pass = new Pass(doc, intentComponents);
+            if (!level.allowsTransparency()) {
+                TransparentImageFlattener.flatten(doc);
+            }
+            int intentComponents = ensureOutputIntent(doc, level);
+            Pass pass = new Pass(doc, intentComponents, level);
             pass.run();
             if (bestEffort) {
                 warnings.addAll(pass.problems());
@@ -133,8 +141,16 @@ public class PdfaNormalizer {
             writeMetadata(doc, effective);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream(pdf.length);
-            // PDF/A-1 bygger på PDF 1.4: inga xref- eller objektströmmar.
-            doc.save(out, CompressParameters.NO_COMPRESSION);
+            if (level.part() == 1) {
+                // PDF/A-1 bygger på PDF 1.4: inga xref- eller objektströmmar.
+                doc.save(out, CompressParameters.NO_COMPRESSION);
+            } else {
+                // PDF/A-2 och 3 bygger på PDF 1.7, som tillåter objektströmmar.
+                if (doc.getVersion() < 1.7f) {
+                    doc.setVersion(1.7f);
+                }
+                doc.save(out, CompressParameters.DEFAULT_COMPRESSION);
+            }
             return new Result(out.toByteArray(), effective, List.copyOf(warnings));
         } catch (IOException e) {
             throw new ConversionException(HttpStatus.UNPROCESSABLE_CONTENT, ConversionException.Reason.UNREADABLE_PDF,
@@ -163,15 +179,16 @@ public class PdfaNormalizer {
         }
         if (level.requiresTagging()) {
             Optional<String> problem = taggingProblem(doc);
+            PdfaLevel fallback = level.untaggedFallback();
             if (problem.isPresent() && bestEffort) {
-                warnings.add("UNTAGGED: " + problem.get() + " Filen blev " + PdfaLevel.PDFA_1B.label() + " i stället för "
+                warnings.add("UNTAGGED: " + problem.get() + " Filen blev " + fallback.label() + " i stället för "
                         + level.label() + ".");
-                return PdfaLevel.PDFA_1B;
+                return fallback;
             }
             if (problem.isPresent()) {
                 throw ConversionException.unprocessable(ConversionException.Reason.UNTAGGED, "PDF-filen saknar taggstruktur och kan inte bli " + level.label() + ".",
-                        List.of(problem.get(), "PDF/A-1a kräver en taggad PDF. Exportera från Word med 'Dokumentstrukturtaggar för"
-                                + " tillgänglighet', eller begär PDF/A-1b."));
+                        List.of(problem.get(), level.label() + " kräver en taggad PDF. Exportera från Word med 'Dokumentstrukturtaggar för"
+                                + " tillgänglighet', eller begär " + fallback.label() + "."));
             }
         }
         return level;
@@ -237,7 +254,7 @@ public class PdfaNormalizer {
         return value instanceof COSNumber number && number.floatValue() < 1f;
     }
 
-    /** Varför filen inte duger som underlag för PDF/A-1a, eller tomt om den är taggad hela vägen. */
+    /** Varför filen inte duger som underlag för en a-nivå (t.ex. PDF/A-1a), eller tomt om den är taggad hela vägen. */
     public static Optional<String> taggingProblem(byte[] pdf) {
         try (PDDocument doc = load(pdf)) {
             return taggingProblem(doc);
@@ -325,10 +342,10 @@ public class PdfaNormalizer {
     }
 
     /**
-     * Ser till att det finns exakt en PDF/A-1-utdataprofil (PDF/A-1 tillåter inte olika profiler)
-     * med en ICC-profil i version 2, och returnerar profilens antal färgkomponenter.
+     * Ser till att det finns exakt en PDF/A-utdataprofil (PDF/A tillåter inte olika profiler), för
+     * PDF/A-1 med en ICC-profil i version 2, och returnerar profilens antal färgkomponenter.
      */
-    private static int ensureOutputIntent(PDDocument doc) throws IOException {
+    private static int ensureOutputIntent(PDDocument doc, PdfaLevel level) throws IOException {
         PDDocumentCatalog catalog = doc.getDocumentCatalog();
         List<PDOutputIntent> intents = catalog.getOutputIntents();
         PDOutputIntent kept = intents.stream()
@@ -340,7 +357,7 @@ public class PdfaNormalizer {
                 catalog.setOutputIntents(List.of(kept));
             }
             COSStream profile = (COSStream) kept.getCOSObject().getDictionaryObject(COSName.DEST_OUTPUT_PROFILE);
-            if (ColorProfiles.tooNew(profile)) {
+            if (level.part() == 1 && ColorProfiles.tooNew(profile)) {
                 ColorProfiles.downgrade(profile);
             }
             return ColorProfiles.components(profile);
@@ -407,7 +424,7 @@ public class PdfaNormalizer {
             dc.addDescription(null, info.getSubject());
         }
         PDFAIdentificationSchema id = xmp.createAndAddPDFAIdentificationSchema();
-        id.setPart(1);
+        id.setPart(level.part());
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
@@ -432,13 +449,22 @@ public class PdfaNormalizer {
         private final Set<String> missingFonts = new LinkedHashSet<>();
         private final Set<String> transparency = new LinkedHashSet<>();
         private final Set<COSBase> checkedProfiles = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final Set<COSBase> checkedCMaps = Collections.newSetFromMap(new IdentityHashMap<>());
         private final int intentComponents;
+        /** PDF/A-1: transparens, JPEG2000, 16-bitarsbilder och ICC v4 måste rättas eller avvisas. */
+        private final boolean part1;
+        /** PDF/A-2a och 3a: tecken i Unicodes privata område (PUA) kräver ActualText eller en riktig mappning. */
+        private final boolean fixPrivateUse;
+        private final String levelLabel;
         private COSArray defaultColorSpace;
         private int pageNumber;
 
-        Pass(PDDocument doc, int intentComponents) {
+        Pass(PDDocument doc, int intentComponents, PdfaLevel level) {
             this.doc = doc;
             this.intentComponents = intentComponents;
+            this.part1 = level.part() == 1;
+            this.fixPrivateUse = level.part() >= 2 && level.requiresTagging();
+            this.levelLabel = level.label();
         }
 
         void run() throws IOException {
@@ -463,17 +489,17 @@ public class PdfaNormalizer {
         List<String> problems() {
             List<String> problems = new ArrayList<>();
             missingFonts.forEach(font -> problems.add("MISSING_FONT: Fonten '" + font + "' är inte inbäddad."));
-            transparency.forEach(where -> problems.add("TRANSPARENCY: Transparens " + where + " (tillåts inte i PDF/A-1)."));
+            transparency.forEach(where -> problems.add("TRANSPARENCY: Transparens " + where + " (tillåts inte i " + levelLabel + ")."));
             return problems;
         }
 
         void rejectIfProblems() {
             List<String> details = new ArrayList<>();
             missingFonts.forEach(font -> details.add("Fonten '" + font + "' är inte inbäddad."));
-            transparency.forEach(where -> details.add("Transparens " + where + " (tillåts inte i PDF/A-1)."));
+            transparency.forEach(where -> details.add("Transparens " + where + " (tillåts inte i " + levelLabel + ")."));
             if (!details.isEmpty()) {
                 throw ConversionException.unprocessable(missingFonts.isEmpty() ? ConversionException.Reason.TRANSPARENCY : ConversionException.Reason.MISSING_FONT,
-                        "PDF-filen kan inte göras om till PDF/A-1 utan att utseendet ändras.", details);
+                        "PDF-filen kan inte göras om till " + levelLabel + " utan att utseendet ändras.", details);
             }
         }
 
@@ -540,7 +566,7 @@ public class PdfaNormalizer {
             if (!(colorSpace instanceof COSArray array) || array.size() < 2 || !(array.getObject(0) instanceof COSName family)) {
                 return;
             }
-            if (COSName.ICCBASED.equals(family) && array.getObject(1) instanceof COSStream profile && checkedProfiles.add(profile)) {
+            if (COSName.ICCBASED.equals(family) && array.getObject(1) instanceof COSStream profile && part1 && checkedProfiles.add(profile)) {
                 if (ColorProfiles.tooNew(profile)) {
                     ColorProfiles.downgrade(profile);
                 }
@@ -552,7 +578,7 @@ public class PdfaNormalizer {
         }
 
         private void checkExtGState(PDExtendedGraphicsState gs) {
-            if (gs == null) {
+            if (gs == null || !part1) {
                 return;
             }
             if (isTransparent(gs.getCOSObject())) {
@@ -561,8 +587,8 @@ public class PdfaNormalizer {
         }
 
 
-        private static void removeTransparencyGroup(COSDictionary dict) {
-            if (dict.getDictionaryObject(COSName.GROUP) instanceof COSDictionary group
+        private void removeTransparencyGroup(COSDictionary dict) {
+            if (part1 && dict.getDictionaryObject(COSName.GROUP) instanceof COSDictionary group
                     && COSName.TRANSPARENCY.equals(group.getCOSName(COSName.S))) {
                 dict.removeItem(COSName.GROUP);
             }
@@ -575,6 +601,9 @@ public class PdfaNormalizer {
         private void fixImage(PDResources resources, COSName name, PDImageXObject image) throws IOException {
             COSStream stream = image.getCOSObject();
             stream.setBoolean(COSName.INTERPOLATE, false);
+            if (!part1) {
+                return;
+            }
             boolean hasSoftMask = stream.containsKey(COSName.SMASK);
             boolean isJpx = image.getSuffix() != null && image.getSuffix().equals("jpx");
             boolean is16Bit = image.getBitsPerComponent() > 8;
@@ -612,10 +641,51 @@ public class PdfaNormalizer {
                 missingFonts.add(font.getName());
                 return;
             }
+            if (fixPrivateUse) {
+                mapSymbolPrivateUse(font);
+            }
             if (font instanceof PDType0Font type0) {
                 ensureCidSet(type0.getDescendantFont());
             } else if (font instanceof PDType1CFont || font instanceof PDType1Font) {
                 ensureCharSet(font);
+            }
+        }
+
+        /**
+         * Word skriver punkter i listor med fonten Symbol, och ToUnicode pekar då på Unicodes privata
+         * område (U+F020–U+F0FF, Symbol-tecknet + F000), t.ex. U+F0B7 för •. PDF/A-2a och 3a kräver
+         * ActualText för sådana tecken; i stället pekas mappningen om till det riktiga Unicode-tecknet
+         * via Symbol-kodningen, vilket också gör texten sökbar och läsbar för skärmläsare.
+         */
+        private void mapSymbolPrivateUse(PDFont font) throws IOException {
+            if (font.getName() == null || !font.getName().toLowerCase(java.util.Locale.ROOT).contains("symbol")
+                    || !(font.getCOSObject().getDictionaryObject(COSName.TO_UNICODE) instanceof COSStream toUnicode)
+                    || !checkedCMaps.add(toUnicode)) {
+                return;
+            }
+            String cmap;
+            try (InputStream in = toUnicode.createInputStream()) {
+                cmap = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.ISO_8859_1);
+            }
+            java.util.regex.Matcher matcher = SYMBOL_PUA.matcher(cmap);
+            StringBuilder fixed = new StringBuilder();
+            boolean changed = false;
+            while (matcher.find()) {
+                int code = Integer.parseInt(matcher.group(2), 16) & 0xff;
+                String name = org.apache.pdfbox.pdmodel.font.encoding.SymbolEncoding.INSTANCE.getName(code);
+                String unicode = name == null ? null : org.apache.pdfbox.pdmodel.font.encoding.GlyphList.getAdobeGlyphList().toUnicode(name);
+                if (unicode == null || unicode.length() != 1) {
+                    matcher.appendReplacement(fixed, matcher.group());
+                    continue;
+                }
+                matcher.appendReplacement(fixed, matcher.group(1) + String.format("<%04X>", (int) unicode.charAt(0)));
+                changed = true;
+            }
+            if (changed) {
+                matcher.appendTail(fixed);
+                try (java.io.OutputStream out = toUnicode.createOutputStream(COSName.FLATE_DECODE)) {
+                    out.write(fixed.toString().getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
+                }
             }
         }
 
@@ -722,7 +792,7 @@ public class PdfaNormalizer {
                 }
                 if (!"Popup".equals(subtype)) {
                     int flags = annotation.getAnnotationFlags();
-                    // PDF/A-1 kräver synliga, utskrivbara annoteringar. Dolt innehåll (dolda fält,
+                    // PDF/A kräver synliga, utskrivbara annoteringar. Dolt innehåll (dolda fält,
                     // granskningsanteckningar) tas bort i stället för att plötsligt synas i arkivfilen.
                     boolean hidden = (flags & (ANNOT_INVISIBLE | ANNOT_HIDDEN)) != 0
                             || ((flags & ANNOT_NO_VIEW) != 0 && (flags & ANNOT_PRINT) == 0);
@@ -732,7 +802,7 @@ public class PdfaNormalizer {
                     flags = (flags | ANNOT_PRINT) & ~(ANNOT_NO_VIEW | ANNOT_TOGGLE_NO_VIEW);
                     annotation.setAnnotationFlags(flags);
                 }
-                if (dict.containsKey(COSName.CA)) {
+                if (part1 && dict.containsKey(COSName.CA)) {
                     dict.setFloat(COSName.CA, 1f);
                 }
                 dict.removeItem(COSName.AA);
@@ -743,7 +813,7 @@ public class PdfaNormalizer {
                 }
                 PDAppearanceDictionary appearance = annotation.getAppearance();
                 if (appearance != null) {
-                    // PDF/A-1: utseendeordlistan får bara innehålla N.
+                    // PDF/A: utseendeordlistan får bara innehålla N.
                     appearance.getCOSObject().removeItem(COSName.R);
                     appearance.getCOSObject().removeItem(COSName.D);
                     visitAppearance(appearance.getNormalAppearance());

@@ -26,6 +26,7 @@ import org.springframework.stereotype.Component;
 import se.fileconverter.api.ConversionException;
 import se.fileconverter.assets.AssetStore;
 import se.fileconverter.config.ConverterProperties;
+import se.fileconverter.pdfa.PdfaLevel;
 import se.fileconverter.pdfa.PdfaNormalizer;
 
 /**
@@ -178,8 +179,9 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
-    public byte[] toPdf(Path input, boolean pdfA) {
-        return toPdf(input, OfficeOptions.defaults(pdfA));
+    /** @param pdfa nivån som ska bli resultatet, eller null utan PDF/A */
+    public byte[] toPdf(Path input, PdfaLevel pdfa) {
+        return toPdf(input, OfficeOptions.defaults(pdfa));
     }
 
     /** @param input filen, med filändelse som avgör format */
@@ -197,10 +199,11 @@ public class OfficeConverter implements InitializingBean, DisposableBean {
             return export(input, inputFormat, options, new HashMap<>(options.filterData()));
         }
         Map<String, Object> filterData = new HashMap<>(options.filterData());
-        filterData.put("SelectPdfVersion", 2);
+        // PDF/A-2 och 3 exporteras direkt i rätt del; PDF/A-1 exporteras som PDF/A-2 och görs om av normaliseringen.
+        filterData.put("SelectPdfVersion", options.pdfa().part() == 3 ? 3 : 2);
         filterData.put("UseTaggedPDF", true);
         byte[] pdf = export(input, inputFormat, options, filterData);
-        if (PdfaNormalizer.hasTransparency(pdf)) {
+        if (!options.pdfa().allowsTransparency() && PdfaNormalizer.hasTransparency(pdf)) {
             // PDF/A-1 tillåter ingen transparens. LibreOffice plattar själv ut den i PDF/A-1-läge, men tar
             // då bort taggarna: resultatet kan bli PDF/A-1b men inte 1a. Bättre än en ogiltig fil.
             log.info("{} innehåller transparens; exporterar om i PDF/A-1-läge, som plattar ut den", input.getFileName());

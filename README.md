@@ -1,7 +1,16 @@
 # file-converter
 
-Konverteringstjänst med samma API som Gotenberg 8 för routerna nedan, men med **validerad PDF/A-1a
-och PDF/A-1b**. Byggd för att ersätta Gotenberg där fonter, grafik och PDF/A har strulat.
+Konverteringstjänst med samma API som Gotenberg 8 för routerna nedan, men med **validerad PDF/A**:
+1a, 1b, 2a, 2u, 2b, 3a, 3u och 3b (Gotenbergs `PDF/A-1b`, `PDF/A-2b` och `PDF/A-3b` och de taggade
+a-nivåerna). Byggd för att ersätta Gotenberg där fonter, grafik och PDF/A har strulat.
+
+| Del | Bygger på | Skillnad |
+|---|---|---|
+| PDF/A-1 | PDF 1.4 | Ingen transparens. Bilder med alfakanal plattas ut, verklig transparens avvisas eller rapporteras |
+| PDF/A-2 | PDF 1.7 | Tillåter transparens, ICC v4, JPEG2000 och objektströmmar. Innehållet lämnas orört |
+| PDF/A-3 | PDF 1.7 | Som PDF/A-2. Bifogade filer stöds ännu inte och tas bort |
+
+Inom en del uppfyller a (taggad, tillgänglig) även u (Unicode för all text), som uppfyller b.
 
 Alla filer som begärs som PDF/A normaliseras och valideras med [veraPDF](https://verapdf.org)
 innan de skickas tillbaka.
@@ -11,8 +20,8 @@ innan de skickas tillbaka.
 - **Bästa försök** (standard, som Gotenberg): allt som går rättas och filen returneras alltid.
   Svaret säger ärligt hur det gick: `X-Pdfa-Compliant: true|false`, `X-Pdfa-Level` (nivån filen
   faktiskt märktes med) och `X-Pdfa-Problems` (veraPDF-regler och egna orsakskoder som återstår).
-  En fil som inte kan bli 1a, för att den saknar taggar, märks som 1b i stället för att påstå något
-  den inte är.
+  En fil som inte kan bli t.ex. 1a eller 2a, för att den saknar taggar, märks som 1b respektive 2b i
+  stället för att påstå något den inte är.
 - **Strikt**: en fil som inte klarar valideringen avvisas med `422` och en förklaring.
 
 Krypterade och redan signerade filer samt jättebilder avvisas i båda lägena.
@@ -59,7 +68,8 @@ Flera filer utan `merge` ger en zip, som i Gotenberg.
 
 ### Svar
 
-- `X-Pdfa-Level: PDF/A-1a` och `X-Pdfa-Compliant: true|false` när PDF/A har begärts.
+- `X-Pdfa-Level: PDF/A-1a` och `X-Pdfa-Compliant: true|false` när PDF/A har begärts. En zip med
+  filer som fått olika nivåer listar dem kommaseparerade.
 - `Gotenberg-Trace`: anropets spårnings-id. Klientens eget id används om det skickas med.
 - Fel som `application/problem+json`. `reason` är en maskinläsbar orsak, `violations` anger exakt
   vad som stoppade PDF/A, och `traceId` kopplar felet till loggarna:
@@ -90,8 +100,8 @@ curl -F files=@kund.pdf -F pdfa=PDF/A-1a http://localhost:3000/forms/pdfengines/
 
 ## Så blir filerna PDF/A
 
-**Office:** LibreOffice exporterar taggad PDF/A-2, som tillåter transparens, och normaliseringen gör
-om den till PDF/A-1. Imagen bygger på Ubuntu 26.04 med LibreOffice 26.2. Testat med `.docx`, `.doc`,
+**Office:** LibreOffice exporterar taggad PDF/A-2 (PDF/A-3 när del 3 begärs). För PDF/A-1 gör
+normaliseringen om den till PDF/A-1. Imagen bygger på Ubuntu 26.04 med LibreOffice 26.2. Testat med `.docx`, `.doc`,
 `.odt`, `.pptx` och `.xlsx`:
 
 | Format | Resultat |
@@ -101,6 +111,10 @@ om den till PDF/A-1. Imagen bygger på Ubuntu 26.04 med LibreOffice 26.2. Testat
 
 Begärs 1a för dem märks filen 1b i bästa försök-läget (`X-Pdfa-Level: PDF/A-1b`). LibreOffice:s eget PDF/A-1-läge används inte, eftersom det kastar hela
 taggstrukturen så fort dokumentet innehåller transparens, t.ex. en PNG med alfakanal.
+Med PDF/A-2 och 3 behövs ingen utplattning: samma bilder blir taggad 2a med transparensen kvar.
+
+Listpunkter som Word skriver med fonten Symbol pekar på Unicodes privata område (t.ex. U+F0B7), vilket
+PDF/A-2a och 3a inte godtar. Mappningen pekas om till det riktiga tecknet (•), som också blir sökbart.
 
 **HTML-mallar:** openhtmltopdf skapar taggad PDF/A direkt från HTML-strukturen (rubriker, listor,
 tabeller, `alt`-texter). `lang` på `<html>` följer med.
@@ -155,7 +169,7 @@ Ett enkelt webbgränssnitt på `/admin` (användare `admin`, lösenord från `CO
 Utan lösenord är administrationen avstängd och `/admin` finns inte.
 
 - **Testa filer:** släpp en eller flera Word-, Excel-, PowerPoint-, PDF- eller HTML-filer. De
-  konverteras som via API:t och du ser om de klarar PDF/A-1a/1b och vad som bryts. Du ser också
+  konverteras som via API:t och du ser om de klarar vald PDF/A-nivå och vad som bryts. Du ser också
   vilka fonter dokumentet begär (installerad, ersätts av alias, saknas) och vilka som hamnade i PDF:en.
   **Visuell avvikelse** jämför resultatet sida för sida med samma dokument utan PDF/A-rättningar.
   PDF/A-godkänt betyder inte att filen ser rätt ut, så kontrollera allt över 0,5 %. Flera filer
@@ -227,7 +241,8 @@ Prometheus-måtten ovan.
 - Mallar kan bara läsa filer som skickats med i anropet. Nätverksanrop och övriga filsystemet är spärrade.
 - Routes för URL-konvertering, skärmdumpar och split finns inte.
 - Standardformat för HTML är A4 (Gotenberg: Letter) om varken mallen eller fälten anger något.
-- Bara PDF/A-1a och PDF/A-1b. Se tabellen ovan för vilka fält som stöds.
+- PDF/A-1a och a-nivåerna i del 2 och 3 utöver Gotenbergs b-nivåer. Bifogade filer i PDF/A-3
+  (`addOriginalDocumentAsStream`, e-faktura) och PDF/UA stöds inte ännu.
 
 ## Säkerhet och robusthet
 

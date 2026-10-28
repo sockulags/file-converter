@@ -86,13 +86,13 @@ class RequestUsageTest {
     void unsupportedPdfaValuesDoNotBecomeNewSeries() throws Exception {
         double invalid = count("converter.conversions", "route", "chromium-html", "pdfa", "ogiltig", "outcome", "avvisad");
 
-        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("pdfa", "PDF/A-2b"))
+        mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("pdfa", "PDF/A-4f"))
                 .andExpect(status().isBadRequest());
         mvc.perform(multipart("/forms/chromium/convert/html").file(html()).param("pdfa", "nagot-helt-annat-1234"))
                 .andExpect(status().isBadRequest());
 
         assertThat(count("converter.conversions", "route", "chromium-html", "pdfa", "ogiltig", "outcome", "avvisad")).isEqualTo(invalid + 2);
-        assertThat(registry.find("converter.conversions").tag("pdfa", "PDF/A-2b").counter()).isNull();
+        assertThat(registry.find("converter.conversions").tag("pdfa", "PDF/A-4f").counter()).isNull();
         assertThat(registry.find("converter.conversions").tag("pdfa", "nagot-helt-annat-1234").counter()).isNull();
     }
 

@@ -87,7 +87,7 @@ public class ConversionController {
         GotenbergOptions options = GotenbergOptions.parse(request, GotenbergOptions.Route.LIBREOFFICE);
         Optional<PdfaLevel> level = PdfaLevel.parse(request.getParameter("pdfa"));
         Boolean strict = bool(request, "pdfaStrict");
-        OfficeOptions officeOptions = options.office(level.isPresent());
+        OfficeOptions officeOptions = options.office(level.orElse(null));
         try (Workspace ws = Workspace.from(request)) {
             List<Path> files = ws.files().stream().sorted(ALPHANUMERIC).toList();
             List<Output> outputs = new ArrayList<>();
@@ -112,7 +112,7 @@ public class ConversionController {
         String ranges = options.pageRanges();
         if (ranges != null && level.isPresent() && level.get().requiresTagging()) {
             throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION,
-                    "nativePageRanges kan inte kombineras med PDF/A-1a för mallar: taggstrukturen skulle peka på borttagna sidor.");
+                    "nativePageRanges kan inte kombineras med " + level.get().label() + " för mallar: taggstrukturen skulle peka på borttagna sidor.");
         }
         try (Workspace ws = Workspace.from(request)) {
             HtmlConverter.Options htmlOptions = new HtmlConverter.Options(pageCss(request, options.bool("preferCssPageSize", false)),
@@ -204,7 +204,9 @@ public class ConversionController {
             headers.set(GotenbergOptions.IGNORED_HEADER, String.join(",", options.ignoredFields()));
         }
         outputs.stream().map(Output::report).filter(Objects::nonNull).findFirst().ifPresent(report -> {
-            headers.set("X-Pdfa-Level", report.level().label());
+            // Flera filer (zip) kan ha fått olika nivåer, t.ex. när en saknade taggar.
+            headers.set("X-Pdfa-Level", reports.stream().map(r -> r.level().label()).distinct()
+                    .collect(java.util.stream.Collectors.joining(",")));
             headers.set("X-Pdfa-Compliant", String.valueOf(outputs.stream().allMatch(o -> o.report().compliant())));
             String problems = reports.stream().flatMap(r -> r.violations().stream())
                     .map(ConversionController::problemCode).distinct().collect(java.util.stream.Collectors.joining(","));

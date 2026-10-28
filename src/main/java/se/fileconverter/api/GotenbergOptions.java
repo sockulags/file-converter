@@ -13,6 +13,7 @@ import java.util.TreeSet;
 import java.util.regex.Pattern;
 import se.fileconverter.observability.ConversionRecord;
 import se.fileconverter.office.OfficeOptions;
+import se.fileconverter.pdfa.PdfaLevel;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -145,7 +146,7 @@ public final class GotenbergOptions {
         if (route == Route.LIBREOFFICE && bool("addOriginalDocumentAsStream", false) && request.getParameter("pdfa") != null
                 && !request.getParameter("pdfa").isBlank()) {
             throw unsupported("addOriginalDocumentAsStream",
-                    "addOriginalDocumentAsStream kan inte kombineras med PDF/A-1, som inte tillåter bifogade filer.");
+                    "addOriginalDocumentAsStream kan inte kombineras med PDF/A: PDF/A-1 och 2 tillåter inte bifogade filer av alla slag.");
         }
     }
 
@@ -227,7 +228,7 @@ public final class GotenbergOptions {
     }
 
     /** LibreOffice-inställningar från Gotenbergs fält. */
-    public OfficeOptions office(boolean pdfA) {
+    public OfficeOptions office(PdfaLevel pdfa) {
         Map<String, Object> filterData = new LinkedHashMap<>();
         LIBREOFFICE_BOOLEANS.forEach((field, key) -> {
             String value = request.getParameter(field);
@@ -251,7 +252,7 @@ public final class GotenbergOptions {
             filterData.put("PageRange", ranges);
         }
         String password = request.getParameter("password");
-        return new OfficeOptions(pdfA, filterData, bool("landscape", false),
+        return new OfficeOptions(pdfa, filterData, bool("landscape", false),
                 password == null || password.isEmpty() ? null : password);
     }
 

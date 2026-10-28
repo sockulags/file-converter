@@ -34,6 +34,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import se.fileconverter.TestPdfs;
 import se.fileconverter.pdfa.PdfaLevel;
+import se.fileconverter.pdfa.PdfaNormalizer;
 import se.fileconverter.pdfa.PdfaValidator;
 
 /**
@@ -519,8 +520,105 @@ class ConversionControllerTest {
 
     @Test
     void unsupportedPdfaLevelIsBadRequest() throws Exception {
-        mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")).param("pdfa", "PDF/A-2b"))
-                .andExpect(status().isBadRequest());
+        mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")).param("pdfa", "PDF/A-4f"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("PDF/A-3b")));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"PDF/A-2b", "PDF/A-2u", "PDF/A-2a", "PDF/A-3b", "PDF/A-3a"})
+    void wordToPdfaPart2And3(String requested) throws Exception {
+        PdfaLevel level = PdfaLevel.parse(requested).orElseThrow();
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")).param("pdfa", requested))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Level", requested))
+                .andExpect(header().string("X-Pdfa-Compliant", "true"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, level);
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            assertThat(doc.getDocumentCatalog().getMetadata().exportXMPMetadata().readAllBytes())
+                    .asString().contains("<pdfaid:part>" + level.part() + "</pdfaid:part>");
+        }
+    }
+
+    @Test
+    void wordBulletsFromSymbolFontBecomeRealBulletsInPdfa2a() throws Exception {
+        // Word skriver listpunkter med fonten Symbol (U+F0B7 i Unicodes privata område), som PDF/A-2a inte godtar.
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("beslut.docx")).param("pdfa", "PDF/A-2a"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            String text = new org.apache.pdfbox.text.PDFTextStripper().getText(doc);
+            assertThat(text).contains("\u2022").doesNotContain("\uF0B7");
+        }
+    }
+
+    @Test
+    void transparentSlideStaysTaggedAndTransparentInPdfa2a() throws Exception {
+        // PDF/A-2 tillåter transparens: ingen omexport i PDF/A-1-läge, så taggarna finns kvar.
+        byte[] pdf = mvc.perform(multipart("/forms/libreoffice/convert").file(file("presentation-transparens.pptx"))
+                        .param("pdfa", "PDF/A-2a"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Level", "PDF/A-2a"))
+                .andExpect(header().string("X-Pdfa-Compliant", "true"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_2A);
+        assertThat(PdfaNormalizer.hasTransparency(pdf)).as("transparensen ska vara kvar").isTrue();
+    }
+
+    @Test
+    void customerPdfWithTransparencyBecomesValidPdfa2b() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/pdfengines/convert")
+                        .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.withTransparency()))
+                        .param("pdfa", "PDF/A-2b").param("pdfaStrict", "true"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Compliant", "true"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_2B);
+        assertThat(PdfaNormalizer.hasTransparency(pdf)).isTrue();
+    }
+
+    @Test
+    void untaggedCustomerPdfRequestedAs2aIsHonestlyLabelled2b() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/pdfengines/convert")
+                        .file(new MockMultipartFile("files", "kund.pdf", "application/pdf", TestPdfs.untaggedWithAlphaImage()))
+                        .param("pdfa", "PDF/A-2a"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Level", "PDF/A-2b"))
+                .andExpect(header().string("X-Pdfa-Compliant", "false"))
+                .andExpect(header().string("X-Pdfa-Problems", org.hamcrest.Matchers.containsString("UNTAGGED")))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_2B);
+    }
+
+    @Test
+    void templateToPdfa2b() throws Exception {
+        byte[] pdf = mvc.perform(multipart("/forms/chromium/convert/html").file(file("index.html", "mall.html"))
+                        .param("pdfa", "PDF/A-2b"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Level", "PDF/A-2b"))
+                .andExpect(header().string("X-Pdfa-Compliant", "true"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(pdf, PdfaLevel.PDFA_2B);
+    }
+
+    @Test
+    void mergeToPdfa3b() throws Exception {
+        byte[] merged = mvc.perform(multipart("/forms/pdfengines/merge")
+                        .file(new MockMultipartFile("files", "1.pdf", "application/pdf", toPdfa1a("beslut.docx")))
+                        .file(new MockMultipartFile("files", "2.pdf", "application/pdf", TestPdfs.withTransparency()))
+                        .param("pdfa", "PDF/A-3b"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Pdfa-Level", "PDF/A-3b"))
+                .andExpect(header().string("X-Pdfa-Compliant", "true"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertCompliant(merged, PdfaLevel.PDFA_3B);
     }
 
     @Test
