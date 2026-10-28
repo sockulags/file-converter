@@ -40,11 +40,30 @@ public class ErrorHandler {
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     ProblemDetail tooLarge(MaxUploadSizeExceededException e, HttpServletRequest request) {
+        ConversionRecord.of(request).startIfMissing(ConversionController.routeName(request.getRequestURI()))
+                .rejected("TOO_LARGE", "Filen är för stor.", List.of());
         return problem(HttpStatus.CONTENT_TOO_LARGE, "Filen är för stor.", "TOO_LARGE", request);
     }
 
     @ExceptionHandler(MultipartException.class)
     ProblemDetail notMultipart(MultipartException e, HttpServletRequest request) {
+        return notMultipart(request);
+    }
+
+    /** Spring kastar IllegalStateException när en konverterings-route anropas utan multipart-innehåll. */
+    @ExceptionHandler(IllegalStateException.class)
+    ProblemDetail illegalState(IllegalStateException e, HttpServletRequest request) {
+        String type = request.getContentType();
+        if (ConversionController.routeName(request.getRequestURI()) != null
+                && (type == null || !type.toLowerCase(java.util.Locale.ROOT).startsWith("multipart/"))) {
+            return notMultipart(request);
+        }
+        return unexpected(e, request);
+    }
+
+    private ProblemDetail notMultipart(HttpServletRequest request) {
+        ConversionRecord.of(request).startIfMissing(ConversionController.routeName(request.getRequestURI()))
+                .rejected("BAD_REQUEST", "Anropet är inte multipart/form-data.", List.of());
         return problem(HttpStatus.BAD_REQUEST, "Anropet måste vara multipart/form-data med minst en fil.", "BAD_REQUEST", request);
     }
 

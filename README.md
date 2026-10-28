@@ -76,7 +76,8 @@ Flera filer utan `merge` ger en zip, som i Gotenberg.
 
 Orsaker: `ENCRYPTED`, `SIGNED`, `UNTAGGED`, `TRANSPARENCY`, `MISSING_FONT`, `IMAGE_TOO_LARGE`,
 `PDFA_INVALID`, `UNREADABLE_PDF`, `LIBREOFFICE_FAILED`, `MERGE_FAILED`, `UNSUPPORTED_FORMAT`,
-`UNSUPPORTED_OPTION`, `DUPLICATE_FILENAME`, `BAD_REQUEST`, `UNAVAILABLE`, `INTERNT_FEL`.
+`UNSUPPORTED_OPTION`, `UNSUPPORTED_ROUTE`, `DUPLICATE_FILENAME`, `BAD_REQUEST`, `TOO_LARGE`, `UNAVAILABLE`,
+`INTERNT_FEL`.
 
 ### Exempel
 
@@ -185,14 +186,31 @@ annoteringar för Prometheus.
 
 | Mätvärde | Taggar | |
 |---|---|---|
-| `converter_conversions_total` | `route`, `pdfa`, `outcome` | `ok`, `underkand`, `avvisad`, `fel` |
+| `converter_conversions_total` | `route`, `pdfa`, `outcome` | `ok`, `underkand`, `avvisad`, `fel`. `pdfa` är en giltig nivå, `ingen` eller `ogiltig` |
 | `converter_rejections_total` | `reason` | Varför filer avvisas, se orsakerna ovan |
 | `converter_pdfa_violations_total` | `rule` | Vilka PDF/A-regler (veraPDF) som bryts |
 | `converter_conversion_duration_seconds` | `route`, `outcome` | Histogram |
 | `converter_busy_total` | | Anrop som fick `503` för att instansen var full |
+| `converter_request_fields_total` | `route`, `field`, `handling` | Fält och `Gotenberg-*`-huvuden klienterna skickar: `stods`, `ignoreras`, `avvisas` |
+| `converter_request_files_total` | `route`, `extension` | Filtyper klienterna skickar |
+| `converter_unknown_routes_total` | `route`, `method` | Anrop till Gotenberg-routes som inte finns här (besvaras med `404`) |
 
-Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`, `ms`, `filer`)
-med spårnings-id. JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`.
+Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`, `ms`, `filer`,
+`ej_stod`) med spårnings-id. `ej_stod` listar fält som ignorerades eller avvisades, med klientens egna namn. JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`.
+
+### Vad klienterna skickar
+
+Inför och efter bytet från Gotenberg visar mätvärdena ovan vad klienterna faktiskt använder, utan att
+någon behöver läsa deras kod. Fältnamn och routes är en fast lista med Gotenberg 8:s namn. Okända
+namn räknas som `okant` respektive `okand`, så att klienter inte kan skapa nya serier i Prometheus.
+Klientens egna namn står på loggraden. Exempel i PromQL:
+
+```promql
+# Fält som klienterna skickar men som inte stöds, per route
+sum by (route, field, handling) (increase(converter_request_fields_total{handling!="stods"}[7d]))
+# Routes som saknas här
+sum by (route, method) (increase(converter_unknown_routes_total[7d]))
+```
 
 Fliken **Statistik** i administrationen visar samma sak för den instans du är inloggad mot, plus de
 100 senaste avvisade eller misslyckade anropen med filnamn, orsak och spårnings-id. Körningar i

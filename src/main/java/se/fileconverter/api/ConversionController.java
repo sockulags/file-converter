@@ -49,6 +49,9 @@ public class ConversionController {
 
     private static final Pattern LENGTH = Pattern.compile("\\d+(\\.\\d+)?(in|cm|mm|pt|px|pc)?");
     private static final Comparator<Path> ALPHANUMERIC = Comparator.comparing(p -> p.getFileName().toString());
+    private static final Map<String, String> ROUTES = Map.of("/forms/libreoffice/convert", "libreoffice",
+            "/forms/chromium/convert/html", "chromium-html", "/forms/pdfengines/convert", "pdfengines-convert",
+            "/forms/pdfengines/merge", "pdfengines-merge");
 
     private final OfficeConverter office;
     private final HtmlConverter html;
@@ -179,11 +182,15 @@ public class ConversionController {
         }).toList();
     }
 
+    /** Routens namn i loggar och mätvärden, eller null för sökvägar som inte är konverteringar. */
+    static String routeName(String path) {
+        return ROUTES.get(path);
+    }
+
     /** Registrerar anropet för loggning och mätvärden (se {@link ConversionRecord}). */
     private static void track(MultipartHttpServletRequest request, String route) {
-        List<String> files = request.getMultiFileMap().values().stream().flatMap(List::stream)
-                .map(file -> file.getOriginalFilename() + " (" + file.getSize() / 1024 + " kB)").toList();
-        ConversionRecord.of(request).start(route, request.getParameter("pdfa"), files);
+        ConversionRecord.of(request).start(route, request.getParameter("pdfa"),
+                request.getMultiFileMap().values().stream().flatMap(List::stream).toList());
     }
 
     private static ResponseEntity<byte[]> respond(MultipartHttpServletRequest request, GotenbergOptions options, List<Output> outputs) {

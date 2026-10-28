@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
+import se.fileconverter.observability.ConversionRecord;
 import se.fileconverter.office.OfficeOptions;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
@@ -58,6 +59,17 @@ public final class GotenbergOptions {
             "marginLeft", "marginRight", "landscape", "preferCssPageSize", "printBackground",
             "generateDocumentOutline", "nativePageRanges", "singlePage", "scale", "emulatedMediaType");
     private static final Set<String> UNSUPPORTED_EVERYWHERE = Set.of("splitMode", "splitSpan", "splitUnify", "downloadFrom");
+    /** Övriga Gotenberg 8-fält som saknar motsvarighet här. De ignoreras men räknas med sitt namn. */
+    private static final Set<String> OTHER_GOTENBERG = Set.of("updateIndexes", "userPassword", "ownerPassword");
+    /** Gotenbergs huvuden. Andra huvuden som börjar på {@code Gotenberg-} räknas som okända. */
+    private static final Set<String> GOTENBERG_HEADERS = Set.of("Gotenberg-Trace", "Gotenberg-Output-Filename",
+            "Gotenberg-Webhook-Url", "Gotenberg-Webhook-Error-Url", "Gotenberg-Webhook-Method",
+            "Gotenberg-Webhook-Error-Method", "Gotenberg-Webhook-Extra-Http-Headers", "Gotenberg-Webhook-Events-Url");
+    private static final Set<String> SUPPORTED_HEADERS = Set.of("Gotenberg-Trace", "Gotenberg-Output-Filename");
+
+    /** Namn som får bli etiketter i mätvärden. Allt annat räknas som {@link #UNKNOWN}, så att klienter inte kan skapa nya serier. */
+    private static final Set<String> KNOWN_NAMES = knownNames();
+    static final String UNKNOWN = "okant";
 
     private static final Pattern PAGE_RANGES = Pattern.compile("\\s*\\d+(\\s*-\\s*\\d+)?(\\s*,\\s*\\d+(\\s*-\\s*\\d+)?)*\\s*");
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -66,6 +78,8 @@ public final class GotenbergOptions {
 
     private final HttpServletRequest request;
     private final List<String> ignored = new ArrayList<>();
+    /** Varje fält och Gotenberg-huvud i anropet och hur det hanterades: stods, ignoreras eller avvisas. */
+    private final Map<String, String> usage = new LinkedHashMap<>();
 
     private GotenbergOptions(HttpServletRequest request) {
         this.request = request;
@@ -74,46 +88,97 @@ public final class GotenbergOptions {
     /** Kontrollerar fält och huvuden för routen. Avvisar med 400 det som inte kan göras rätt. */
     public static GotenbergOptions parse(HttpServletRequest request, Route route) {
         GotenbergOptions options = new GotenbergOptions(request);
-        options.validate(route);
+        try {
+            options.validate(route);
+        } finally {
+            // Även avvisade anrop räknas, annars syns inte vilka fält som stoppade klienterna.
+            ConversionRecord.of(request).fields(options.fieldUsage(), options.notSupported());
+        }
         return options;
     }
 
     private void validate(Route route) {
-        if (request.getHeader("Gotenberg-Webhook-Url") != null) {
-            throw unsupported("Webhooks (asynkron konvertering) stöds inte. Anropa utan Gotenberg-Webhook-Url och vänta på svaret.");
-        }
-        if (bool("pdfua", false)) {
-            throw unsupported("PDF/UA stöds inte. Använd pdfa=PDF/A-1a, som också kräver taggad, tillgänglig PDF.");
+        for (String header : Collections.list(request.getHeaderNames())) {
+            if (header.regionMatches(true, 0, "Gotenberg-", 0, 10)) {
+                String name = GOTENBERG_HEADERS.stream().filter(header::equalsIgnoreCase).findFirst().orElse(header);
+                usage.put(name, SUPPORTED_HEADERS.contains(name) ? "stods" : "ignoreras");
+            }
         }
         for (String field : Collections.list(request.getParameterNames())) {
-            if (UNSUPPORTED_EVERYWHERE.contains(field)) {
-                throw unsupported("Fältet '" + field + "' stöds inte.");
-            }
             boolean known = COMMON.contains(field)
                     || (route == Route.LIBREOFFICE && (LIBREOFFICE.contains(field) || LIBREOFFICE_BOOLEANS.containsKey(field)))
                     || (route == Route.CHROMIUM && CHROMIUM.contains(field))
                     || (route == Route.PDFENGINES && field.equals("merge"));
-            if (!known) {
-                ignored.add(field);
+            usage.put(field, known ? "stods" : "ignoreras");
+        }
+        if (request.getHeader("Gotenberg-Webhook-Url") != null) {
+            throw unsupported("Gotenberg-Webhook-Url",
+                    "Webhooks (asynkron konvertering) stöds inte. Anropa utan Gotenberg-Webhook-Url och vänta på svaret.");
+        }
+        if (bool("pdfua", false)) {
+            throw unsupported("pdfua", "PDF/UA stöds inte. Använd pdfa=PDF/A-1a, som också kräver taggad, tillgänglig PDF.");
+        }
+        for (String field : usage.keySet()) {
+            if (UNSUPPORTED_EVERYWHERE.contains(field)) {
+                throw unsupported(field, "Fältet '" + field + "' stöds inte.");
             }
         }
+        usage.forEach((field, handling) -> {
+            if (handling.equals("ignoreras") && !field.regionMatches(true, 0, "Gotenberg-", 0, 10)) {
+                ignored.add(field);
+            }
+        });
         if (route == Route.CHROMIUM) {
             if (bool("singlePage", false)) {
-                throw unsupported("singlePage stöds inte. Ange sidstorlek med paperWidth/paperHeight eller @page.");
+                throw unsupported("singlePage", "singlePage stöds inte. Ange sidstorlek med paperWidth/paperHeight eller @page.");
             }
             String scale = request.getParameter("scale");
             if (scale != null && !scale.isBlank() && Double.parseDouble(scale.trim()) != 1.0) {
-                throw unsupported("scale stöds inte. Skala mallen med CSS (t.ex. font-size) i stället.");
+                throw unsupported("scale", "scale stöds inte. Skala mallen med CSS (t.ex. font-size) i stället.");
             }
             String media = request.getParameter("emulatedMediaType");
             if (media != null && media.trim().equalsIgnoreCase("screen")) {
-                throw unsupported("emulatedMediaType=screen stöds inte. Mallen renderas alltid som utskrift (@media print).");
+                throw unsupported("emulatedMediaType",
+                        "emulatedMediaType=screen stöds inte. Mallen renderas alltid som utskrift (@media print).");
             }
         }
         if (route == Route.LIBREOFFICE && bool("addOriginalDocumentAsStream", false) && request.getParameter("pdfa") != null
                 && !request.getParameter("pdfa").isBlank()) {
-            throw unsupported("addOriginalDocumentAsStream kan inte kombineras med PDF/A-1, som inte tillåter bifogade filer.");
+            throw unsupported("addOriginalDocumentAsStream",
+                    "addOriginalDocumentAsStream kan inte kombineras med PDF/A-1, som inte tillåter bifogade filer.");
         }
+    }
+
+    /**
+     * Fält och Gotenberg-huvuden i anropet och hur de hanterades, med namn som är säkra som etiketter
+     * i mätvärden: okända namn blir {@value #UNKNOWN}.
+     */
+    public Map<String, String> fieldUsage() {
+        Map<String, String> result = new LinkedHashMap<>();
+        usage.forEach((name, handling) -> result.merge(KNOWN_NAMES.contains(name) ? name : UNKNOWN, handling,
+                (a, b) -> a.equals("avvisas") || b.equals("avvisas") ? "avvisas" : a));
+        return result;
+    }
+
+    /**
+     * Fält och huvuden som inte stöds, med klientens egna namn ("waitDelay=ignoreras"), för loggraden.
+     * Kontrolltecken byts ut så att ett fältnamn inte kan skapa egna loggrader.
+     */
+    public List<String> notSupported() {
+        return usage.entrySet().stream().filter(entry -> !entry.getValue().equals("stods"))
+                .map(entry -> {
+                    String name = entry.getKey().replaceAll("\\p{Cntrl}", "?");
+                    return (name.length() > 60 ? name.substring(0, 60) : name) + "=" + entry.getValue();
+                })
+                .sorted().limit(30).toList();
+    }
+
+    private static Set<String> knownNames() {
+        Set<String> names = new java.util.HashSet<>();
+        List.of(COMMON, LIBREOFFICE, LIBREOFFICE_BOOLEANS.keySet(), CHROMIUM, CHROMIUM_NO_EFFECT, UNSUPPORTED_EVERYWHERE,
+                OTHER_GOTENBERG, GOTENBERG_HEADERS).forEach(names::addAll);
+        names.add("merge");
+        return Set.copyOf(names);
     }
 
     /** Fält som togs emot men inte påverkar resultatet. */
@@ -212,7 +277,8 @@ public final class GotenbergOptions {
         }
     }
 
-    private static ConversionException unsupported(String message) {
+    private ConversionException unsupported(String field, String message) {
+        usage.put(field, "avvisas");
         return ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION, message);
     }
 }

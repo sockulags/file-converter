@@ -57,9 +57,9 @@ public class ConversionTracingFilter extends OncePerRequestFilter {
                 }
                 Duration duration = Duration.ofNanos(System.nanoTime() - start);
                 telemetry.record(record, duration);
-                log.info("route={} pdfa={} utfall={} orsak={} status={} ms={} filer={}", record.route, record.pdfa,
+                log.info("route={} pdfa={} utfall={} orsak={} status={} ms={} filer={} ej_stod={}", record.route, record.pdfa,
                         record.outcome == null ? "ok" : record.outcome, record.reason == null ? "-" : record.reason,
-                        response.getStatus(), duration.toMillis(), record.files);
+                        response.getStatus(), duration.toMillis(), record.files, record.notSupported);
             }
             MDC.remove("traceId");
         }

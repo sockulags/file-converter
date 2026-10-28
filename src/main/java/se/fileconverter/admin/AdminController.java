@@ -147,8 +147,7 @@ public class AdminController {
         PdfaLevel level = PdfaLevel.parse(request.getParameter("pdfa")).orElse(PdfaLevel.PDFA_1A);
         // Testbänken räknas i statistiken som en egen route, skild från klienternas anrop.
         ConversionRecord record = ConversionRecord.of(request).start("testbank", level.label(),
-                request.getMultiFileMap().values().stream().flatMap(List::stream)
-                        .map(file -> file.getOriginalFilename() + " (" + file.getSize() / 1024 + " kB)").toList());
+                request.getMultiFileMap().values().stream().flatMap(List::stream).toList());
         try (Workspace workspace = Workspace.from(request)) {
             CheckService.Result result = check.check(workspace, level);
             if (result.converted()) {
