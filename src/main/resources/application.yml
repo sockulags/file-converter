@@ -38,6 +38,7 @@ converter:
     task-timeout: 120s
     queue-timeout: 30s
     max-tasks-per-process: 200  # starta om processen regelbundet för att undvika minnesläckor
+    process-memory: 512MB       # uppskattning per process; används bara för varningen om minnesbudgeten vid start
   fonts:
     dirs:
       - /usr/share/fonts/truetype

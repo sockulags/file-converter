@@ -8,6 +8,8 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
@@ -31,6 +33,7 @@ public class ConcurrencyLimit implements HandlerInterceptor, WebMvcConfigurer {
     public @interface Limited {
     }
 
+    private static final Logger log = LoggerFactory.getLogger(ConcurrencyLimit.class);
     private static final String ACQUIRED = ConcurrencyLimit.class.getName() + ".acquired";
 
     private final Semaphore permits;
@@ -42,6 +45,12 @@ public class ConcurrencyLimit implements HandlerInterceptor, WebMvcConfigurer {
         this.telemetry = telemetry;
         ConverterProperties.Limits limits = properties.limits();
         int max = limits.maxConcurrent() > 0 ? limits.maxConcurrent() : Runtime.getRuntime().availableProcessors();
+        if (limits.maxConcurrent() > 0) {
+            log.info("Högst {} samtidiga konverteringar", max);
+        } else {
+            // Utan CPU-gräns eller -XX:ActiveProcessorCount blir det nodens alla kärnor. Se docs/kapacitet.md.
+            log.warn("CONVERTER_LIMITS_MAX_CONCURRENT är inte satt: högst {} samtidiga konverteringar (antal processorer)", max);
+        }
         this.permits = new Semaphore(max, true);
         this.queueTimeoutMillis = limits.queueTimeout().toMillis();
     }
