@@ -25,9 +25,10 @@ Krypterade och redan signerade filer samt jättebilder avvisas i båda lägena.
 | `POST /forms/chromium/convert/html` | `index.html` + resurser (bilder, css, ttf) | openhtmltopdf |
 | `POST /forms/pdfengines/convert` | PDF-filer | PDFBox (normalisering) |
 | `POST /forms/pdfengines/merge` | PDF-filer, slås ihop i bokstavsordning | PDFBox |
-| `GET /health` | – | `503` tills LibreOffice är igång |
+| `GET /health` | – | Samma form som i Gotenberg, `503` när LibreOffice inte är igång |
+| `GET /version` | – | Tjänstens version som text (inte en Gotenberg-version) |
 
-Port `3000`, precis som Gotenberg. Mätvärden på port `9090`.
+Port `3000`, precis som Gotenberg. Mätvärden och Kubernetes-prober på port `9090`, se [Övervakning](#övervakning).
 
 ### Gotenberg-kompatibilitet
 
@@ -38,7 +39,7 @@ när resultatet inte kan bli det klienten väntar sig.
 
 | Route | Stöds | Ignoreras | Avvisas |
 |---|---|---|---|
-| alla | `pdfa`, `metadata` (JSON), `flatten`, huvudena `Gotenberg-Output-Filename` och `Gotenberg-Trace` | okända fält | `pdfua=true`, `split*`, `downloadFrom`, `Gotenberg-Webhook-*` |
+| alla | `pdfa`, `metadata` (JSON), `flatten`, huvudena `Gotenberg-Output-Filename` och `Gotenberg-Trace` | okända fält | `pdfua=true`, `split*`, `downloadFrom`, alla `Gotenberg-Webhook-*`, `userPassword`/`ownerPassword` (filen skulle bli okrypterad), `watermark*`, `stamp*`, `nativeWatermark*`, filfälten `embeds`, `watermark` och `stamp` |
 | `libreoffice/convert` | `merge`, `landscape`, `nativePageRanges`, `password`, `exportFormFields`, `allowDuplicateFieldNames`, `exportBookmarks`, `exportBookmarksToPdfDestination`, `exportPlaceholders`, `exportNotes`, `exportNotesPages`, `exportOnlyNotesPages`, `exportNotesInMargin`, `convertOooTargetToPdfTarget`, `exportLinksRelativeFsys`, `exportHiddenSlides`, `skipEmptyPages`, `singlePageSheets`, `losslessImageCompression`, `quality`, `reduceImageResolution`, `maxImageResolution`, `addOriginalDocumentAsStream` (ej med PDF/A) | | |
 | `chromium/convert/html` | `header.html`, `footer.html`, `paperWidth`, `paperHeight`, `margin*`, `landscape`, `preferCssPageSize`, `printBackground`, `generateDocumentOutline`, `nativePageRanges` (ej med PDF/A-1a) | `waitDelay`, `waitForExpression`, `cookies`, `userAgent`, `extraHttpHeaders`, `failOn*`, `skipNetworkIdleEvent`, `omitBackground`, `emulatedMediaType=print` | `singlePage`, `scale` ≠ 1, `emulatedMediaType=screen` |
 | `pdfengines/convert`, `merge` | `merge`-ordning i bokstavsordning | | |
@@ -76,7 +77,7 @@ Flera filer utan `merge` ger en zip, som i Gotenberg.
 
 Orsaker: `ENCRYPTED`, `SIGNED`, `UNTAGGED`, `TRANSPARENCY`, `MISSING_FONT`, `IMAGE_TOO_LARGE`,
 `PDFA_INVALID`, `UNREADABLE_PDF`, `LIBREOFFICE_FAILED`, `LIBREOFFICE_TIMEOUT`, `LIBREOFFICE_CRASHED`, `BUSY`,
-`MERGE_FAILED`, `UNSUPPORTED_FORMAT`, `UNSUPPORTED_OPTION`, `UNSUPPORTED_ROUTE`, `DUPLICATE_FILENAME`,
+`TIMEOUT`, `MERGE_FAILED`, `UNSUPPORTED_FORMAT`, `UNSUPPORTED_OPTION`, `UNSUPPORTED_ROUTE`, `DUPLICATE_FILENAME`,
 `BAD_REQUEST`, `TOO_LARGE`, `UNAVAILABLE`, `INTERNT_FEL`.
 
 ### Exempel
@@ -168,8 +169,14 @@ Utan lösenord är administrationen avstängd och `/admin` finns inte.
   eller som säkerhetskopia. Import ersätter allt, men först efter att hela zip-filen kontrollerats.
 
 Resurserna sparas i `CONVERTER_ASSETS_DIR` (`/data` i imagen). I Kubernetes är det en delad volym
-(`deploy/k8s/base/pvc.yaml`, ReadWriteMany) som alla poddar läser. Poddar som inte tog emot ändringen
-laddar om inom 30 sekunder. Under en omstart av LibreOffice väntar nya Office-anrop i några sekunder.
+(`deploy/k8s/base/pvc.yaml`, ReadWriteMany) som alla poddar läser. Podden som tog emot ändringen laddar
+om direkt. De andra upptäcker den inom 30 sekunder och laddar om efter en slumpad väntan på upp till
+60 sekunder (`CONVERTER_ASSETS_RELOAD_JITTER`), så att poddarna inte startar om LibreOffice samtidigt.
+Omstarten väntar ut pågående Office-exporter, vilket kan ta upp till `CONVERTER_OFFICE_TASK_TIMEOUT`.
+Under tiden väntar nya Office-anrop och podden är inte ready, så trafiken går till de andra poddarna.
+
+Alias vars målfont inte är installerad används inte. De loggas som varning vid start och efter varje
+omladdning, markeras under **Alias** och räknas i `converter_font_aliases_missing`.
 
 API:t bakom sidan (`/admin/api/...`) kan också skriptas. Ändrande anrop kräver huvudet
 `X-Requested-With` som skydd mot CSRF:
@@ -189,14 +196,46 @@ annoteringar för Prometheus.
 | `converter_conversions_total` | `route`, `pdfa`, `outcome` | `ok`, `underkand`, `avvisad`, `fel`. `pdfa` är en giltig nivå, `ingen` eller `ogiltig` |
 | `converter_rejections_total` | `reason` | Varför filer avvisas, se orsakerna ovan |
 | `converter_pdfa_violations_total` | `rule` | Vilka PDF/A-regler (veraPDF) som bryts |
-| `converter_conversion_duration_seconds` | `route`, `outcome` | Histogram |
-| `converter_busy_total` | | Anrop som fick `503` för att instansen var full |
+| `converter_conversion_duration_seconds` | `route`, `outcome` | Histogram med hinkar upp till 5 min (1, 5, 15, 30, 60, 120, 180, 240 s) |
+| `converter_busy_total` | `route` | Anrop som fick `503 BUSY` för att instansen eller LibreOffice var full |
+| `converter_inflight` | | Pågående konverteringar, inklusive sådana som fått `503 TIMEOUT` men ännu inte avbrutits |
+| `converter_concurrency_limit` | | Högsta antal samtidiga konverteringar |
+| `converter_queue_waiting` | | Anrop som väntar på en plats |
+| `converter_queue_wait_seconds` | `route` | Väntan på en plats (histogram), även för anrop som sedan fick `503` |
+| `converter_timeouts_total` | `stage` | Avbrutna av en tidsgräns: `anrop`, `html`, `efterbehandling`, `pdfa` |
+| `converter_libreoffice_up` | | `1` när LibreOffice-poolen är igång |
+| `converter_libreoffice_restarts_total` | `cause` | `fonter` (ändrade fonter), `krasch`, `tidsgrans`. Omstarter efter `max-tasks-per-process` räknas inte |
+| `converter_assets_reloads_total` | `result` | Omladdningar av fonter och alias: `ok`, `fel` |
+| `converter_assets_last_reload_timestamp_seconds` | | Senaste lyckade omladdning (eller start) |
+| `converter_font_aliases_missing` | | Fontalias vars målfont saknas |
+| `converter_cleanup_failures_total` | | Temporärkataloger för anrop som inte kunde tas bort |
+| `converter_build_info` | `version`, `java`, `libreoffice` | Alltid `1`. Versionerna loggas också vid start |
 | `converter_request_fields_total` | `route`, `field`, `handling` | Fält och `Gotenberg-*`-huvuden klienterna skickar: `stods`, `ignoreras`, `avvisas` |
 | `converter_request_files_total` | `route`, `extension` | Filtyper klienterna skickar |
 | `converter_unknown_routes_total` | `route`, `method` | Anrop till Gotenberg-routes som inte finns här (besvaras med `404`) |
 
 Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`, `ms`, `filer`,
-`ej_stod`) med spårnings-id. `ej_stod` listar fält som ignorerades eller avvisades, med klientens egna namn. JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`.
+`ej_stod`) med spårnings-id, också när anropet avvisas innan det når controllern (`503 BUSY`, för stora
+filer, inte multipart). `ej_stod` listar fält som ignorerades eller avvisades, med klientens egna namn.
+JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`. Fälten blir då egna
+fält i JSON-raden.
+
+**Filnamn.** Kundernas filnamn kan innehålla personuppgifter. `CONVERTER_LOGGING_FILE_NAMES` styr hur de
+skrivs i loggar och i administrationens lista över fel: `extension` (standard, t.ex. `*.docx (12 kB)`),
+`none` (bara storleken) eller `full` (hela namnet). Felmeddelandet till klienten innehåller fortfarande
+filnamnet.
+
+### Hälsa och prober
+
+| Sökväg | Port | Beror på LibreOffice | Används till |
+|---|---|---|---|
+| `/health` | 3000 | ja (`503` när den är nere) | Gotenberg-kompatibilitet för klienter |
+| `/actuator/health/liveness` | 9090 | nej | `livenessProbe` och `startupProbe` |
+| `/actuator/health/readiness` | 9090 | ja | `readinessProbe` |
+
+En LibreOffice som startas om eller inte kommer upp tar podden ur trafik men startar inte om den.
+När podden stängs av blir den inte ready, köande anrop får `503` direkt och pågående konverteringar får
+bli klara (`server.shutdown=graceful`, upp till 180 s). LibreOffice stoppas först därefter.
 
 ### Vad klienterna skickar
 
@@ -227,6 +266,10 @@ Prometheus-måtten ovan.
 - Mallar kan bara läsa filer som skickats med i anropet. Nätverksanrop och övriga filsystemet är spärrade.
 - Routes för URL-konvertering, skärmdumpar och split finns inte.
 - Standardformat för HTML är A4 (Gotenberg: Letter) om varken mallen eller fälten anger något.
+- Fel returneras som `application/problem+json` med `reason`, inte som text. Klienter som läser
+  felets text får JSON. Tidsgränser ger `503`, som i Gotenberg.
+- `/version` returnerar tjänstens version, inte en Gotenberg-version. `/health` har samma form som i
+  Gotenberg men bara `details.libreoffice`, med versionen som tillägg.
 - Bara PDF/A-1a och PDF/A-1b. Se tabellen ovan för vilka fält som stöds.
 
 ## Säkerhet och robusthet
@@ -243,6 +286,12 @@ Prometheus-måtten ovan.
   `LIBREOFFICE_TIMEOUT` (`CONVERTER_OFFICE_TASK_TIMEOUT` passerad, som i Gotenberg) och
   `LIBREOFFICE_CRASHED`. Kraschar LibreOffice under ett jobb görs ett nytt försök med en ny process
   innan anropet ger upp. I mätvärdena räknas `503` som utfallet `fel`, inte `avvisad`.
+- Samtidighetsgränsen tas innan uppladdningen läses. Anrop som köar har alltså inte skrivit något till
+  disk, och `CONVERTER_LIMITS_MAX_QUEUED` kan begränsa kön.
+- Tidsgränser för hela konverteringen (`CONVERTER_LIMITS_REQUEST_TIMEOUT`, 180 s utan kötiden),
+  HTML-renderingen, efterbehandlingen och PDF/A-normaliseringen med veraPDF. Överskrids en ger det
+  `503 TIMEOUT`. Konverteringen avbryts, men PDFBox och openhtmltopdf reagerar inte alltid på avbrott.
+  Den håller då kvar sin plats i samtidighetsgränsen tills den är klar.
 - Två uppladdade filer med samma namn avvisas (`400`) i stället för att den ena tyst skriver över den andra.
 - Dolda annoteringar (dolda fält, interna kommentarer) tas bort, eftersom PDF/A-1 annars kräver att de visas.
 - Administrationens inloggning kontrolleras på vilken funktion anropet hamnar i, inte på URL:en.
@@ -312,6 +361,14 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 | `CONVERTER_ASSETS_POLL_INTERVAL` | `30s` | Hur ofta andra poddars ändringar plockas upp |
 | `CONVERTER_LIMITS_MAX_CONCURRENT` | antal processorer | Samtidiga konverteringar per instans. Fler köar |
 | `CONVERTER_LIMITS_QUEUE_TIMEOUT` | `60s` | Därefter `503` med `Retry-After` |
+| `CONVERTER_LIMITS_MAX_QUEUED` | `0` (obegränsat) | Fler köande anrop får `503 BUSY` direkt |
+| `CONVERTER_LIMITS_REQUEST_TIMEOUT` | `180s` | Hela konverteringen, utan kötiden. `0` = ingen gräns |
+| `CONVERTER_LIMITS_HTML_TIMEOUT` | `60s` | Renderingen av en HTML-mall |
+| `CONVERTER_LIMITS_POST_PROCESS_TIMEOUT` | `60s` | Metadata, formulär och sidurval per PDF |
+| `CONVERTER_LIMITS_PDFA_TIMEOUT` | `120s` | PDF/A-normalisering och veraPDF per PDF |
+| `CONVERTER_ASSETS_RELOAD_JITTER` | `60s` | Längsta slumpade väntan innan en annan podds ändring laddas in |
+| `CONVERTER_LOGGING_FILE_NAMES` | `extension` | `none`, `extension` eller `full`: filnamn i loggar och `/admin` |
+| `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` | `180s` | Hur länge pågående konverteringar får bli klara vid avstängning |
 | `SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE` | `100MB` | |
 | `SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE` | `100MB` | |
 
