@@ -578,7 +578,18 @@ public class ChromiumConverter implements InitializingBean, DisposableBean {
             } catch (IOException ignored) {
                 // Processen avslutades.
             }
-            endpoint.completeExceptionally(new IOException("Chromium avslutades vid start (kod " + process.exitValue() + ")"));
+            // Bara intressant om webbläsaren dog innan den hann svara. Utdata kan stängas strax innan
+            // processen avslutats, så vänta en kort stund på koden i stället för att fråga direkt.
+            if (!endpoint.isDone()) {
+                String code;
+                try {
+                    code = process.waitFor(2, TimeUnit.SECONDS) ? String.valueOf(process.exitValue()) : "okänd";
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    code = "okänd";
+                }
+                endpoint.completeExceptionally(new IOException("Chromium avslutades vid start (kod " + code + ")"));
+            }
         });
         try {
             String url = endpoint.get(30, TimeUnit.SECONDS);
