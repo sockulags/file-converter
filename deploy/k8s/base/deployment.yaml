@@ -18,12 +18,16 @@ spec:
         prometheus.io/port: "9090"
         prometheus.io/path: /actuator/prometheus
     spec:
+      # Hämtningshemlighet för ett privat registry. Finns den inte i namespacet hämtas imagen utan inloggning.
+      imagePullSecrets:
+        - name: file-converter-registry
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
       containers:
         - name: file-converter
-          image: file-converter:latest  # ersätt med ert registry
+          # Registry och tagg sätts i overlays (images i kustomization.yaml).
+          image: file-converter
           ports:
             - containerPort: 3000
               name: http

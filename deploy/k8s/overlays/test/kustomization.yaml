@@ -1,0 +1,29 @@
+# Testmiljön. Byt registry, namespace och lagringsklass mot era egna.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: file-converter-test
+resources:
+  - ../../base
+images:
+  - name: file-converter
+    newName: registry.example.com/plattform/file-converter
+    newTag: main  # testmiljön följer main; byt mot sha-<commit> för att låsa en version
+patches:
+  # En replik räcker i test: ReadWriteOnce fungerar då också för fontvolymen.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: file-converter
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: file-converter
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1

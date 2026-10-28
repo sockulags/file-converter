@@ -1,0 +1,20 @@
+# Produktion. Byt registry, namespace och lagringsklass mot era egna. Imagen låses till en
+# release (v1.2.3) eller en commit (sha-<commit>), aldrig main, så att varje byte är en ändring i git.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: file-converter
+resources:
+  - ../../base
+images:
+  - name: file-converter
+    newName: registry.example.com/plattform/file-converter
+    newTag: v0.1.0
+patches:
+  # Fontvolymen delas av alla repliker och kräver ReadWriteMany.
+  - target:
+      kind: PersistentVolumeClaim
+      name: file-converter-assets
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: byt-mot-lagringsklass-med-rwx
