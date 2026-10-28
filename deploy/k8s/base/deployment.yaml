@@ -13,17 +13,37 @@ spec:
     metadata:
       labels:
         app: file-converter
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "9090"
-        prometheus.io/path: /actuator/prometheus
+      # Mätvärdena skrapas via PodMonitor i components/monitoring. Utan Prometheus Operator:
+      # components/prometheus-annotations i stället (inte båda, då skrapas allt två gånger).
     spec:
       # Hämtningshemlighet för ett privat registry. Finns den inte i namespacet hämtas imagen utan inloggning.
       imagePullSecrets:
         - name: file-converter-registry
+      # Klarar Pod Security Standards "restricted".
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
+        runAsGroup: 1001
+        # Gör den delade volymen skrivbar för uid 1001. OnRootMismatch: ägarbyte bara när rotkatalogen
+        # har fel grupp, inte vid varje start (går långsamt på stora NFS-volymer).
+        fsGroup: 1001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # Sprid poddarna över noder (krav) och zoner (om möjligt), så att en nod eller zon inte tar ner allt.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: file-converter
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: file-converter
       containers:
         - name: file-converter
           # Registry och tagg sätts i overlays (images i kustomization.yaml).
@@ -33,10 +53,27 @@ spec:
               name: http
             - containerPort: 9090
               name: metrics
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # Pool, samtidighet, CPU och minne hänger ihop. Ändra dem tillsammans, se docs/kapacitet.md.
           env:
-            # En LibreOffice-process per samtidig Office-konvertering. Höj tillsammans med minnet.
+            # En LibreOffice-process per samtidig Office-konvertering.
             - name: CONVERTER_OFFICE_POOL_SIZE
               value: "2"
+            # Samtidiga konverteringar per pod, alla routes. Utan värdet blir det antalet processorer.
+            # Poolen + 2, så att HTML och PDF kan köra medan Office-anropen fyller poolen.
+            - name: CONVERTER_LIMITS_MAX_CONCURRENT
+              value: "4"
+            # Ersätter imagens JAVA_TOOL_OPTIONS. ActiveProcessorCount = CPU-gränsen nedan, så att JVM:en
+            # dimensionerar trådpooler och GC efter podden och inte efter noden.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=40 -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError"
+            # JSON-loggar (ECS) för Loki eller Elastic.
+            - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
+              value: ecs
             # Aktiverar /admin. Utan hemligheten är administrationen avstängd.
             - name: CONVERTER_ADMIN_PASSWORD
               valueFrom:
@@ -44,11 +81,14 @@ spec:
                   name: file-converter-admin
                   key: password
                   optional: true
+          # Request = limit: QoS Guaranteed, så att podden vräks sist vid minnesbrist på noden.
+          # Minnet: heap 40 % (1,2 GiB) + 2 × LibreOffice (cirka 0,5 GiB) + JVM i övrigt.
           resources:
             requests:
-              cpu: "1"
-              memory: 1536Mi
+              cpu: "2"
+              memory: 3Gi
             limits:
+              cpu: "2"
               memory: 3Gi
           startupProbe:
             httpGet: { path: /health, port: 3000 }
@@ -61,15 +101,22 @@ spec:
             httpGet: { path: /health, port: 3000 }
             periodSeconds: 20
             failureThreshold: 6
+          # Rootfs är skrivskyddat. Skrivbart: /tmp (uppladdningar, arbetskataloger, LibreOffice-profiler),
+          # /home/converter (LibreOffice och dconf skriver i HOME) och /data (fonter och alias).
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: home
+              mountPath: /home/converter
             - name: assets
               mountPath: /data
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 4Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 256Mi
         - name: assets
           persistentVolumeClaim:
             claimName: file-converter-assets

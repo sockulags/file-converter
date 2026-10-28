@@ -1,0 +1,11 @@
+# Högst en podd i taget får tas ner frivilligt (nodtömning, klusteruppgradering). Med en enda
+# replik (testmiljön) stoppar budgeten inte tömningen.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: file-converter
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: file-converter
