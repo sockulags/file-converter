@@ -53,7 +53,7 @@ final class CdpClient implements AutoCloseable {
                     .buildAsync(endpoint, listener)
                     .get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             CdpClient client = new CdpClient(socket);
-            listener.client = client;
+            listener.client.complete(client);
             return client;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -159,7 +159,8 @@ final class CdpClient implements AutoCloseable {
 
     private static final class Listener implements WebSocket.Listener {
         private final StringBuilder buffer = new StringBuilder();
-        private volatile CdpClient client;
+        /** Sätts när anslutningen är klar; meddelanden som kommer innan dess väntar på den. */
+        private final CompletableFuture<CdpClient> client = new CompletableFuture<>();
 
         @Override
         public CompletionStage<?> onText(WebSocket socket, CharSequence data, boolean last) {
@@ -167,10 +168,7 @@ final class CdpClient implements AutoCloseable {
             if (last) {
                 String text = buffer.toString();
                 buffer.setLength(0);
-                while (client == null) {
-                    Thread.onSpinWait();
-                }
-                client.receive(text);
+                client.thenAccept(connected -> connected.receive(text));
             }
             socket.request(1);
             return null;
@@ -178,17 +176,13 @@ final class CdpClient implements AutoCloseable {
 
         @Override
         public CompletionStage<?> onClose(WebSocket socket, int statusCode, String reason) {
-            if (client != null) {
-                client.closedRemotely(null);
-            }
+            client.thenAccept(connected -> connected.closedRemotely(null));
             return null;
         }
 
         @Override
         public void onError(WebSocket socket, Throwable error) {
-            if (client != null) {
-                client.closedRemotely(error);
-            }
+            client.thenAccept(connected -> connected.closedRemotely(error));
         }
     }
 }
