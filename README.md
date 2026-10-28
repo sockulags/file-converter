@@ -168,7 +168,7 @@ Utan lösenord är administrationen avstängd och `/admin` finns inte.
   eller som säkerhetskopia. Import ersätter allt, men först efter att hela zip-filen kontrollerats.
 
 Resurserna sparas i `CONVERTER_ASSETS_DIR` (`/data` i imagen). I Kubernetes är det en delad volym
-(`deploy/k8s/pvc.yaml`, ReadWriteMany) som alla poddar läser. Poddar som inte tog emot ändringen
+(`deploy/k8s/base/pvc.yaml`, ReadWriteMany) som alla poddar läser. Poddar som inte tog emot ändringen
 laddar om inom 30 sekunder. Under en omstart av LibreOffice väntar nya Office-anrop i några sekunder.
 
 API:t bakom sidan (`/admin/api/...`) kan också skriptas. Ändrande anrop kräver huvudet
@@ -233,7 +233,8 @@ Prometheus-måtten ovan.
 
 - LibreOffice körs med en profil som blockerar länkade resurser i dokument (bilder via http eller
   `file:`) och stänger av makron. Annars kan en kundfil få tjänsten att anropa interna adresser
-  eller bädda in lokala filer. `deploy/k8s/networkpolicy.yaml` stänger dessutom all utgående trafik.
+  eller bädda in lokala filer. `deploy/k8s/base/networkpolicy.yaml` stänger dessutom all utgående trafik och
+  släpper bara in klienter och Prometheus.
 - Bilder över 40 megapixel avvisas med en förklaring i stället för att packas upp.
 - Utplattningen av bilder har ett minnes- och tidstak (10 s per dokument). Över taket läggs
   bilderna mot vitt.
@@ -269,8 +270,32 @@ Lokalt utan Docker krävs Java 21, LibreOffice (helst 26.2, som i imagen) och fo
 mvn spring-boot:run
 ```
 
-Kubernetes-manifest finns i `deploy/k8s/` (`kubectl apply -k deploy/k8s`). Skapa lösenordet för
-administrationen separat: `kubectl create secret generic file-converter-admin --from-literal=password=...`.
+### Kubernetes och Flux
+
+Manifesten ligger i `deploy/k8s/`: en gemensam `base/` och en overlay per miljö (`overlays/test`,
+`overlays/prod`). Overlayn sätter namespace, image och det som skiljer miljöerna åt. Registry,
+namespace och lagringsklass i overlays är exempel som byts mot era egna.
+
+```bash
+kubectl apply -k deploy/k8s/overlays/test
+```
+
+Med Flux pekar en `Kustomization` per miljö på sin overlay, se `deploy/flux/file-converter.yaml`.
+Produktion väntar där på att testmiljön är frisk (`dependsOn`).
+
+- **Image:** CI publicerar imagen när repo-variabeln `REGISTRY` är satt, med hemligheterna
+  `REGISTRY_USERNAME` och `REGISTRY_PASSWORD`. Taggar: `main`, `sha-<commit>` och för git-taggar som
+  `v1.2.3` även `1.2.3` och `1.2`. SBOM och provenance följer med, så att registryt kan skanna imagen.
+  Test följer `main`. Produktion låses till en release, och ett byte görs som en ändring av `newTag`
+  i `overlays/prod`.
+- **Hemligheter:** lösenordet till administrationen (`file-converter-admin`) och hämtningshemligheten
+  till registryt (`file-converter-registry`) checkas inte in i klartext. Skapa dem i klustret, eller
+  kryptera dem med SOPS och låt Flux avkoda dem:
+  `kubectl create secret generic file-converter-admin --from-literal=password=...`
+- **Vilka som når tjänsten:** NetworkPolicy släpper bara in namespaces med etiketten
+  `file-converter/klient=true` (port 3000) och `file-converter/metrics=true` (port 9090, Prometheus).
+  Märk klienternas namespaces innan bytet, annars får de inget svar:
+  `kubectl label namespace <namespace> file-converter/klient=true`
 
 ### Konfiguration
 
