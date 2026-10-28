@@ -58,8 +58,17 @@ class ConversionControllerTest {
 
     private final PdfaValidator validator = new PdfaValidator();
 
+    /**
+     * Villkor för integrationstesterna. Med {@code REQUIRE_LIBREOFFICE=true} (som i CI) fallerar de i
+     * stället för att hoppas över när LibreOffice saknas, så att ett trasigt CI inte ser grönt ut.
+     */
     static boolean libreOfficeInstalled() {
-        return new java.io.File("/usr/bin/soffice").canExecute() || new java.io.File("/usr/lib/libreoffice/program/soffice").canExecute();
+        boolean installed = new java.io.File("/usr/bin/soffice").canExecute()
+                || new java.io.File("/usr/lib/libreoffice/program/soffice").canExecute();
+        if (!installed && Boolean.parseBoolean(System.getenv("REQUIRE_LIBREOFFICE"))) {
+            throw new IllegalStateException("REQUIRE_LIBREOFFICE=true men LibreOffice (soffice) saknas.");
+        }
+        return installed;
     }
 
     @Test
@@ -112,7 +121,8 @@ class ConversionControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-Pdfa-Level", "PDF/A-1b"))
                 .andExpect(header().string("X-Pdfa-Compliant", "false"))
-                .andExpect(header().string("X-Pdfa-Problems", "UNTAGGED"))
+                // Fler orsaker kan tillkomma med andra LibreOffice-versioner; UNTAGGED är det som måste finnas.
+                .andExpect(header().string("X-Pdfa-Problems", org.hamcrest.Matchers.containsString("UNTAGGED")))
                 .andReturn().getResponse().getContentAsByteArray();
 
         assertCompliant(pdf, PdfaLevel.PDFA_1B);

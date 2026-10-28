@@ -321,6 +321,9 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 mvn verify   # kräver LibreOffice och fonterna; integrationstesterna hoppas över utan LibreOffice
 ```
 
+I CI är `REQUIRE_LIBREOFFICE=true` satt. Då fallerar integrationstesterna i stället för att hoppas över
+om LibreOffice saknas. CI kör testerna på Java 25, samma version som imagen.
+
 Varje PDF/A-svar i integrationstesterna valideras om med veraPDF och kontrolleras för innehåll i
 strukturträdet. Testfilerna skapas med `scripts/make_fixtures.py` (kräver python-docx, Pillow och
 fonttools). Testfonterna är omdöpta delmängder av DejaVu Sans.
