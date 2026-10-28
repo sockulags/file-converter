@@ -29,13 +29,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t file-converter:ci .
+      # Samma begränsningar som i Kubernetes (PSS restricted): skrivskyddat rootfs med skrivbara
+      # /tmp, /home/converter och /data, inga capabilities.
       - name: Röktest av imagen
         run: |
-          docker run -d --name fc -p 3000:3000 file-converter:ci
+          docker run -d --name fc -p 3000:3000 --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:exec --tmpfs /home/converter:uid=1001,gid=1001 --tmpfs /data:uid=1001,gid=1001 \
+            file-converter:ci
           for i in $(seq 1 60); do curl -sf localhost:3000/health && break; sleep 2; done
           curl -sf -o out.pdf -F files=@src/test/resources/fixtures/beslut.docx -F pdfa=PDF/A-1a \
             localhost:3000/forms/libreoffice/convert -D headers.txt
           grep -i "x-pdfa-compliant: true" headers.txt
+      - name: tini är PID 1 och inga zombieprocesser finns
+        run: |
+          docker exec fc ps -eo pid,stat,comm
+          test "$(docker exec fc ps -o comm= -p 1)" = tini
+          ! docker exec fc ps -eo stat= | grep -q '^Z'
+      - name: Loggar från röktestet
+        if: failure()
+        run: docker logs fc
 
   manifest:
     runs-on: ubuntu-24.04
