@@ -90,15 +90,15 @@ curl -F files=@kund.pdf -F pdfa=PDF/A-1a http://localhost:3000/forms/pdfengines/
 ## Så blir filerna PDF/A
 
 **Office:** LibreOffice exporterar taggad PDF/A-2, som tillåter transparens, och normaliseringen gör
-om den till PDF/A-1. Testat med `.docx`, `.doc`, `.odt`, `.pptx` och `.xlsx`:
+om den till PDF/A-1. Imagen bygger på Ubuntu 26.04 med LibreOffice 26.2. Testat med `.docx`, `.doc`,
+`.odt`, `.pptx` och `.xlsx`:
 
 | Format | Resultat |
 |---|---|
-| Word (`.docx`, `.doc`), `.odt`, PowerPoint (`.pptx`) | PDF/A-1a med taggar |
+| Word (`.docx`, `.doc`), `.odt`, PowerPoint (`.pptx`), kalkylark (`.xlsx`) | PDF/A-1a med taggar |
 | Bilder med halvgenomskinliga former eller skuggor | PDF/A-1b: LibreOffice exporteras om i PDF/A-1-läge, som plattar ut transparensen men tar bort taggarna |
-| Kalkylark (`.xlsx`) | PDF/A-1b: LibreOffice skapar inga taggar för kalkylark |
 
-Begärs 1a för de två sista märks filen 1b i bästa försök-läget (`X-Pdfa-Level: PDF/A-1b`). LibreOffice:s eget PDF/A-1-läge används inte, eftersom det kastar hela
+Begärs 1a för dem märks filen 1b i bästa försök-läget (`X-Pdfa-Level: PDF/A-1b`). LibreOffice:s eget PDF/A-1-läge används inte, eftersom det kastar hela
 taggstrukturen så fort dokumentet innehåller transparens, t.ex. en PNG med alfakanal.
 
 **HTML-mallar:** openhtmltopdf skapar taggad PDF/A direkt från HTML-strukturen (rubriker, listor,
@@ -240,7 +240,7 @@ docker build -t file-converter .
 docker run -p 3000:3000 file-converter
 ```
 
-Lokalt utan Docker krävs Java 21, LibreOffice och fonterna ovan:
+Lokalt utan Docker krävs Java 21, LibreOffice (helst 26.2, som i imagen) och fonterna ovan:
 
 ```bash
 mvn spring-boot:run

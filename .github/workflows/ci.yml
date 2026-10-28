@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: LibreOffice och fonter (samma som i Docker-imagen)
@@ -24,7 +24,7 @@ jobs:
       - run: mvn -B verify
 
   docker:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: test
     steps:
       - uses: actions/checkout@v7

@@ -6,7 +6,7 @@ COPY src ./src
 # Testerna körs i CI, där LibreOffice finns installerat.
 RUN mvn -q -B -DskipTests package
 
-FROM eclipse-temurin:25-jre-noble
+FROM eclipse-temurin:25-jre-resolute
 
 # --no-install-recommends håller borta extra fontpaket (bl.a. OpenType/CFF) som LibreOffice
 # annars kan välja som ersättning. Fontlistan nedan är den enda som finns i imagen.
