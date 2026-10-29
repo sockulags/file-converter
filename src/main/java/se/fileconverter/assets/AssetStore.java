@@ -22,6 +22,8 @@ import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import se.fileconverter.config.ConverterProperties;
 import tools.jackson.core.type.TypeReference;
@@ -46,6 +48,7 @@ public class AssetStore {
     private static final long MAX_IMPORT_BYTES = 200L * 1024 * 1024;
     private static final int MAX_IMPORT_ENTRIES = 500;
     private static final JsonMapper JSON = JsonMapper.builder().build();
+    private static final Logger log = LoggerFactory.getLogger(AssetStore.class);
 
     private final Path root;
     private final Path fontsDir;
@@ -56,7 +59,10 @@ public class AssetStore {
         try {
             Files.createDirectories(fontsDir);
         } catch (IOException e) {
-            throw new UncheckedIOException("Kan inte skapa resurskatalogen " + fontsDir, e);
+            // Vanligast i Kubernetes: volymen saknar skrivrätt för uid 1001 (fsGroup saknas eller stöds inte
+            // av lagringen). Starta ändå, med imagens fonter, i stället för att hamna i CrashLoopBackOff.
+            log.warn("Kan inte skapa resurskatalogen {} ({}). Startar utan uppladdade fonter, och uppladdning "
+                    + "i administrationen fungerar inte. Kontrollera volymens behörigheter (fsGroup).", fontsDir, e.toString());
         }
     }
 
@@ -65,6 +71,9 @@ public class AssetStore {
     }
 
     public List<Path> fontFiles() {
+        if (!Files.isDirectory(fontsDir)) {
+            return List.of();
+        }
         try (Stream<Path> files = Files.list(fontsDir)) {
             return files.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".ttf")).sorted().toList();
         } catch (IOException e) {

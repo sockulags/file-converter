@@ -104,9 +104,9 @@ public class CheckService {
             } else {
                 route = "office";
                 requested = RequestedFonts.find(Files.readAllBytes(files.getFirst()));
-                raw = office.toPdf(files.getFirst(), true);
+                raw = office.toPdf(files.getFirst(), level);
                 Path document = files.getFirst();
-                reference = () -> office.toPdf(document, false);
+                reference = () -> office.toPdf(document, (PdfaLevel) null);
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);

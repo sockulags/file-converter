@@ -1,0 +1,16 @@
+# För kluster utan Prometheus Operator, där Prometheus hittar poddar via annoteringarna
+# prometheus.io/*. Använd i stället för components/monitoring, inte tillsammans med den: då skrapas
+# varje podd två gånger och alla summor i larm och dashboard dubbleras.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      kind: Deployment
+      name: file-converter
+    patch: |-
+      - op: add
+        path: /spec/template/metadata/annotations
+        value:
+          prometheus.io/scrape: "true"
+          prometheus.io/port: "9090"
+          prometheus.io/path: /actuator/prometheus

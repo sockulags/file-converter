@@ -13,7 +13,7 @@ import se.fileconverter.config.ConverterProperties;
  * <ul>
  *   <li><b>Bästa försök</b> (standard, som Gotenberg): allt som går rättas, och filen returneras även
  *       om något återstår. Svaret säger ärligt om filen klarar valideringen och vilken nivå den
- *       märktes med; en fil som inte kan bli 1a märks 1b i stället för att påstå något den inte är.</li>
+ *       märktes med; en fil som inte kan bli t.ex. 1a märks 1b i stället för att påstå något den inte är.</li>
  *   <li><b>Strikt</b>: en fil som inte klarar valideringen avvisas med 422 och en förklaring.</li>
  * </ul>
  */
@@ -48,7 +48,7 @@ public class PdfaService {
         }
         List<String> problems = new ArrayList<>(normalized.warnings());
         problems.addAll(report.violations());
-        boolean compliant = report.compliant() && normalized.level() == level;
+        boolean compliant = report.compliant() && normalized.level().satisfies(level);
         return new Result(normalized.pdf(), new PdfaValidator.Report(normalized.level(), compliant, problems));
     }
 }

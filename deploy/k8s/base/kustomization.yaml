@@ -1,0 +1,11 @@
+# Gemensamt för alla miljöer. Driftsätt via en overlay (overlays/test, overlays/prod), som sätter
+# namespace, image och det som skiljer miljöerna åt.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - pvc.yaml
+  - networkpolicy.yaml

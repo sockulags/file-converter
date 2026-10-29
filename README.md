@@ -1,7 +1,16 @@
 # file-converter
 
-Konverteringstjänst med samma API som Gotenberg 8 för routerna nedan, men med **validerad PDF/A-1a
-och PDF/A-1b**. Byggd för att ersätta Gotenberg där fonter, grafik och PDF/A har strulat.
+Konverteringstjänst med samma API som Gotenberg 8 för routerna nedan, men med **validerad PDF/A**:
+1a, 1b, 2a, 2u, 2b, 3a, 3u och 3b (Gotenbergs `PDF/A-1b`, `PDF/A-2b` och `PDF/A-3b` och de taggade
+a-nivåerna). Byggd för att ersätta Gotenberg där fonter, grafik och PDF/A har strulat.
+
+| Del | Bygger på | Skillnad |
+|---|---|---|
+| PDF/A-1 | PDF 1.4 | Ingen transparens. Bilder med alfakanal plattas ut, verklig transparens avvisas eller rapporteras |
+| PDF/A-2 | PDF 1.7 | Tillåter transparens, ICC v4, JPEG2000 och objektströmmar. Innehållet lämnas orört |
+| PDF/A-3 | PDF 1.7 | Som PDF/A-2. Bifogade filer stöds ännu inte och tas bort |
+
+Inom en del uppfyller a (taggad, tillgänglig) även u (Unicode för all text), som uppfyller b.
 
 Alla filer som begärs som PDF/A normaliseras och valideras med [veraPDF](https://verapdf.org)
 innan de skickas tillbaka.
@@ -11,8 +20,8 @@ innan de skickas tillbaka.
 - **Bästa försök** (standard, som Gotenberg): allt som går rättas och filen returneras alltid.
   Svaret säger ärligt hur det gick: `X-Pdfa-Compliant: true|false`, `X-Pdfa-Level` (nivån filen
   faktiskt märktes med) och `X-Pdfa-Problems` (veraPDF-regler och egna orsakskoder som återstår).
-  En fil som inte kan bli 1a, för att den saknar taggar, märks som 1b i stället för att påstå något
-  den inte är.
+  En fil som inte kan bli t.ex. 1a eller 2a, för att den saknar taggar, märks som 1b respektive 2b i
+  stället för att påstå något den inte är.
 - **Strikt**: en fil som inte klarar valideringen avvisas med `422` och en förklaring.
 
 Krypterade och redan signerade filer samt jättebilder avvisas i båda lägena.
@@ -22,12 +31,13 @@ Krypterade och redan signerade filer samt jättebilder avvisas i båda lägena.
 | Route | Indata | Motor |
 |---|---|---|
 | `POST /forms/libreoffice/convert` | Office-filer (docx, xlsx, pptx, odt, rtf …) | LibreOffice via JODConverter |
-| `POST /forms/chromium/convert/html` | `index.html` + resurser (bilder, css, ttf) | openhtmltopdf |
+| `POST /forms/chromium/convert/html` | `index.html` + resurser (bilder, css, js, ttf) | openhtmltopdf eller Chromium, efter mallen (se nedan) |
 | `POST /forms/pdfengines/convert` | PDF-filer | PDFBox (normalisering) |
 | `POST /forms/pdfengines/merge` | PDF-filer, slås ihop i bokstavsordning | PDFBox |
-| `GET /health` | – | `503` tills LibreOffice är igång |
+| `GET /health` | – | Samma form som i Gotenberg (`details.chromium`, `details.libreoffice`), `503` när LibreOffice inte är igång |
+| `GET /version` | – | Tjänstens version som text (inte en Gotenberg-version) |
 
-Port `3000`, precis som Gotenberg. Mätvärden på port `9090`.
+Port `3000`, precis som Gotenberg. Mätvärden och Kubernetes-prober på port `9090`, se [Övervakning](#övervakning).
 
 ### Gotenberg-kompatibilitet
 
@@ -38,12 +48,43 @@ när resultatet inte kan bli det klienten väntar sig.
 
 | Route | Stöds | Ignoreras | Avvisas |
 |---|---|---|---|
-| alla | `pdfa`, `metadata` (JSON), `flatten`, huvudena `Gotenberg-Output-Filename` och `Gotenberg-Trace` | okända fält | `pdfua=true`, `split*`, `downloadFrom`, `Gotenberg-Webhook-*` |
+| alla | `pdfa`, `metadata` (JSON), `flatten`, huvudena `Gotenberg-Output-Filename` och `Gotenberg-Trace` | okända fält | `pdfua=true`, `split*`, `downloadFrom`, alla `Gotenberg-Webhook-*`, `userPassword`/`ownerPassword` (filen skulle bli okrypterad), `watermark*`, `stamp*`, `nativeWatermark*`, filfälten `embeds`, `watermark` och `stamp` |
 | `libreoffice/convert` | `merge`, `landscape`, `nativePageRanges`, `password`, `exportFormFields`, `allowDuplicateFieldNames`, `exportBookmarks`, `exportBookmarksToPdfDestination`, `exportPlaceholders`, `exportNotes`, `exportNotesPages`, `exportOnlyNotesPages`, `exportNotesInMargin`, `convertOooTargetToPdfTarget`, `exportLinksRelativeFsys`, `exportHiddenSlides`, `skipEmptyPages`, `singlePageSheets`, `losslessImageCompression`, `quality`, `reduceImageResolution`, `maxImageResolution`, `addOriginalDocumentAsStream` (ej med PDF/A) | | |
-| `chromium/convert/html` | `header.html`, `footer.html`, `paperWidth`, `paperHeight`, `margin*`, `landscape`, `preferCssPageSize`, `printBackground`, `generateDocumentOutline`, `nativePageRanges` (ej med PDF/A-1a) | `waitDelay`, `waitForExpression`, `cookies`, `userAgent`, `extraHttpHeaders`, `failOn*`, `skipNetworkIdleEvent`, `omitBackground`, `emulatedMediaType=print` | `singlePage`, `scale` ≠ 1, `emulatedMediaType=screen` |
+| `chromium/convert/html`, båda motorerna | `header.html`, `footer.html`, `paperWidth`, `paperHeight`, `margin*`, `landscape`, `preferCssPageSize`, `printBackground`, `generateDocumentOutline`, `nativePageRanges`, `converterEngine` (tillägg) | `cookies`, `extraHttpHeaders` (mallar når inte nätverket) | |
+| `chromium/convert/html`, Chromium | `waitDelay` (tak `CONVERTER_CHROMIUM_MAX_WAIT_DELAY`), `waitForExpression`, `waitForSelector`, `emulatedMediaType`, `emulatedMediaFeatures`, `userAgent`, `omitBackground`, `scale`, `singlePage`, `generateTaggedPdf`, `failOnConsoleExceptions`, `failOnResourceLoadingFailed`, `failOnResourceHttpStatusCodes`, `skipNetworkIdleEvent` | `failOnHttpStatusCodes`, `ignoreResourceHttpStatusDomains` (sidan läses aldrig över http) | |
+| `chromium/convert/html`, openhtmltopdf | | Chromium-fälten ovan | `singlePage`, `scale` ≠ 1, `emulatedMediaType=screen` (bara med `converterEngine=openhtmltopdf`; annars väljs Chromium), `nativePageRanges` med en a-nivå |
 | `pdfengines/convert`, `merge` | `merge`-ordning i bokstavsordning | | |
 
 Tal utan enhet i pappers- och marginalfält är tum, som i Gotenberg. Annars `mm`, `cm`, `in`, `pt`, `px`.
+
+### HTML-mallar: openhtmltopdf eller Chromium
+
+Varje mall renderas med den motor som klarar den. Svaret säger vilken och varför
+(`X-Converter-Engine`, `X-Converter-Engine-Reason`):
+
+| Ordning | Motor | Orsak |
+|---|---|---|
+| 1. Fältet `converterEngine=chromium\|openhtmltopdf` | den valda | `vald` |
+| 2. Fält som bara fungerar i en webbläsare: `waitDelay`, `waitFor*`, `emulatedMediaFeatures`, `failOnConsoleExceptions`, `singlePage`, `omitBackground`, `generateTaggedPdf`, `scale` ≠ 1, `emulatedMediaType=screen` | Chromium | `falt` |
+| 3. Mallen (index.html, header.html, footer.html och alla .css): `<script>`, `on*=`, `javascript:` | Chromium | `script` |
+| `display: flex`, `display: grid`/`grid-template` | Chromium | `flexbox`, `grid` |
+| `position: sticky`, `var(--…)`, `@supports`, `@container`, `transform`, `filter`, `box-shadow`, `opacity` < 1, kolumner | Chromium | `css3` |
+| `<svg>`, `.svg`-bilder, `<canvas>`, `<iframe>` | Chromium | `svg`, `canvas`, `iframe` |
+| 4. Annars | openhtmltopdf | `standard` |
+
+- **openhtmltopdf** ger taggad PDF/A direkt från HTML-strukturen och är förstahandsvalet för egna mallar.
+  Utan fält blir sidan A4 och mallens `@page` gäller.
+- **Chromium** (Chrome for Testing, headless) renderar som Gotenberg och med Gotenbergs standardvärden:
+  Letter, marginaler 0,39 tum, `preferCssPageSize=false`, `printBackground=false`, och `header.html`/
+  `footer.html` som Chromiums sidhuvud och sidfot. Med PDF/A begärd skapar Chromium en taggad PDF.
+  En b-nivå i del 2 eller 3 märks då med a-nivån om filen klarar den (`X-Pdfa-Level: PDF/A-2a` när
+  `PDF/A-2b` begärdes), annars den begärda nivån. Chromium-PDF:er har ofta transparens, så PDF/A-2b
+  är det naturliga valet. `failOn*` ger `409` som i Gotenberg.
+
+Mallen öppnas i Chromium under en påhittad adress, och varje begäran från sidan besvaras från
+filerna i anropet. Allt annat stoppas: andra adresser, `file:` och nätverket (alla värdnamn pekar
+på ingenting). Varje anrop får en egen inkognitokontext. Fonterna och aliasen är desamma som för
+LibreOffice och openhtmltopdf.
 
 Detaljer:
 - **`header.html`/`footer.html`** blir löpande sidhuvud och sidfot i sidans marginaler.
@@ -59,7 +100,8 @@ Flera filer utan `merge` ger en zip, som i Gotenberg.
 
 ### Svar
 
-- `X-Pdfa-Level: PDF/A-1a` och `X-Pdfa-Compliant: true|false` när PDF/A har begärts.
+- `X-Pdfa-Level: PDF/A-1a` och `X-Pdfa-Compliant: true|false` när PDF/A har begärts. En zip med
+  filer som fått olika nivåer listar dem kommaseparerade.
 - `Gotenberg-Trace`: anropets spårnings-id. Klientens eget id används om det skickas med.
 - Fel som `application/problem+json`. `reason` är en maskinläsbar orsak, `violations` anger exakt
   vad som stoppade PDF/A, och `traceId` kopplar felet till loggarna:
@@ -75,8 +117,10 @@ Flera filer utan `merge` ger en zip, som i Gotenberg.
 ```
 
 Orsaker: `ENCRYPTED`, `SIGNED`, `UNTAGGED`, `TRANSPARENCY`, `MISSING_FONT`, `IMAGE_TOO_LARGE`,
-`PDFA_INVALID`, `UNREADABLE_PDF`, `LIBREOFFICE_FAILED`, `MERGE_FAILED`, `UNSUPPORTED_FORMAT`,
-`UNSUPPORTED_OPTION`, `DUPLICATE_FILENAME`, `BAD_REQUEST`, `UNAVAILABLE`, `INTERNT_FEL`.
+`PDFA_INVALID`, `UNREADABLE_PDF`, `LIBREOFFICE_FAILED`, `LIBREOFFICE_TIMEOUT`, `LIBREOFFICE_CRASHED`, `BUSY`,
+`TIMEOUT`, `MERGE_FAILED`, `UNSUPPORTED_FORMAT`, `UNSUPPORTED_OPTION`, `UNSUPPORTED_ROUTE`, `DUPLICATE_FILENAME`,
+`BAD_REQUEST`, `TOO_LARGE`, `UNAVAILABLE`, `CHROMIUM_TIMEOUT`, `CHROMIUM_CRASHED`, `CHROMIUM_FAILED`,
+`CONSOLE_EXCEPTION`, `RESOURCE_FAILED`, `INTERNT_FEL`.
 
 ### Exempel
 
@@ -89,17 +133,21 @@ curl -F files=@kund.pdf -F pdfa=PDF/A-1a http://localhost:3000/forms/pdfengines/
 
 ## Så blir filerna PDF/A
 
-**Office:** LibreOffice exporterar taggad PDF/A-2, som tillåter transparens, och normaliseringen gör
-om den till PDF/A-1. Testat med `.docx`, `.doc`, `.odt`, `.pptx` och `.xlsx`:
+**Office:** LibreOffice exporterar taggad PDF/A-2 (PDF/A-3 när del 3 begärs). För PDF/A-1 gör
+normaliseringen om den till PDF/A-1. Imagen bygger på Ubuntu 26.04 med LibreOffice 26.2. Testat med `.docx`, `.doc`,
+`.odt`, `.pptx` och `.xlsx`:
 
 | Format | Resultat |
 |---|---|
-| Word (`.docx`, `.doc`), `.odt`, PowerPoint (`.pptx`) | PDF/A-1a med taggar |
+| Word (`.docx`, `.doc`), `.odt`, PowerPoint (`.pptx`), kalkylark (`.xlsx`) | PDF/A-1a med taggar |
 | Bilder med halvgenomskinliga former eller skuggor | PDF/A-1b: LibreOffice exporteras om i PDF/A-1-läge, som plattar ut transparensen men tar bort taggarna |
-| Kalkylark (`.xlsx`) | PDF/A-1b: LibreOffice skapar inga taggar för kalkylark |
 
-Begärs 1a för de två sista märks filen 1b i bästa försök-läget (`X-Pdfa-Level: PDF/A-1b`). LibreOffice:s eget PDF/A-1-läge används inte, eftersom det kastar hela
+Begärs 1a för dem märks filen 1b i bästa försök-läget (`X-Pdfa-Level: PDF/A-1b`). LibreOffice:s eget PDF/A-1-läge används inte, eftersom det kastar hela
 taggstrukturen så fort dokumentet innehåller transparens, t.ex. en PNG med alfakanal.
+Med PDF/A-2 och 3 behövs ingen utplattning: samma bilder blir taggad 2a med transparensen kvar.
+
+Listpunkter som Word skriver med fonten Symbol pekar på Unicodes privata område (t.ex. U+F0B7), vilket
+PDF/A-2a och 3a inte godtar. Mappningen pekas om till det riktiga tecknet (•), som också blir sökbart.
 
 **HTML-mallar:** openhtmltopdf skapar taggad PDF/A direkt från HTML-strukturen (rubriker, listor,
 tabeller, `alt`-texter). `lang` på `<html>` följer med.
@@ -154,7 +202,7 @@ Ett enkelt webbgränssnitt på `/admin` (användare `admin`, lösenord från `CO
 Utan lösenord är administrationen avstängd och `/admin` finns inte.
 
 - **Testa filer:** släpp en eller flera Word-, Excel-, PowerPoint-, PDF- eller HTML-filer. De
-  konverteras som via API:t och du ser om de klarar PDF/A-1a/1b och vad som bryts. Du ser också
+  konverteras som via API:t och du ser om de klarar vald PDF/A-nivå och vad som bryts. Du ser också
   vilka fonter dokumentet begär (installerad, ersätts av alias, saknas) och vilka som hamnade i PDF:en.
   **Visuell avvikelse** jämför resultatet sida för sida med samma dokument utan PDF/A-rättningar.
   PDF/A-godkänt betyder inte att filen ser rätt ut, så kontrollera allt över 0,5 %. Flera filer
@@ -167,8 +215,14 @@ Utan lösenord är administrationen avstängd och `/admin` finns inte.
   eller som säkerhetskopia. Import ersätter allt, men först efter att hela zip-filen kontrollerats.
 
 Resurserna sparas i `CONVERTER_ASSETS_DIR` (`/data` i imagen). I Kubernetes är det en delad volym
-(`deploy/k8s/pvc.yaml`, ReadWriteMany) som alla poddar läser. Poddar som inte tog emot ändringen
-laddar om inom 30 sekunder. Under en omstart av LibreOffice väntar nya Office-anrop i några sekunder.
+(`deploy/k8s/base/pvc.yaml`, ReadWriteMany) som alla poddar läser. Podden som tog emot ändringen laddar
+om direkt. De andra upptäcker den inom 30 sekunder och laddar om efter en slumpad väntan på upp till
+60 sekunder (`CONVERTER_ASSETS_RELOAD_JITTER`), så att poddarna inte startar om LibreOffice samtidigt.
+Omstarten väntar ut pågående Office-exporter, vilket kan ta upp till `CONVERTER_OFFICE_TASK_TIMEOUT`.
+Under tiden väntar nya Office-anrop och podden är inte ready, så trafiken går till de andra poddarna.
+
+Alias vars målfont inte är installerad används inte. De loggas som varning vid start och efter varje
+omladdning, markeras under **Alias** och räknas i `converter_font_aliases_missing`.
 
 API:t bakom sidan (`/admin/api/...`) kan också skriptas. Ändrande anrop kräver huvudet
 `X-Requested-With` som skydd mot CSRF:
@@ -180,19 +234,74 @@ curl -u admin:$PASS -o resurser.zip http://localhost:3000/admin/api/export
 
 ## Övervakning
 
-Mätvärden finns på en egen port (`9090`) i Prometheus-format: `/actuator/prometheus`. Podden har
-annoteringar för Prometheus.
+Mätvärden finns på en egen port (`9090`) i Prometheus-format: `/actuator/prometheus`. Skrapning,
+larm och dashboard ligger i kustomize-komponenten `deploy/k8s/components/monitoring` (PodMonitor,
+PrometheusRule och en Grafana-dashboard som ConfigMap med etiketten `grafana_dashboard`), som
+båda overlays tar med. Den kräver Prometheus Operator. Utan den används
+`deploy/k8s/components/prometheus-annotations` (annoteringarna `prometheus.io/*`) i stället, och
+larmen och dashboarden (`dashboard/file-converter.json`) läggs in för hand. Vad larmen betyder och
+vad man gör står i [runbook](docs/runbook.md).
 
 | Mätvärde | Taggar | |
 |---|---|---|
-| `converter_conversions_total` | `route`, `pdfa`, `outcome` | `ok`, `underkand`, `avvisad`, `fel` |
+| `converter_conversions_total` | `route`, `pdfa`, `outcome` | `ok`, `underkand`, `avvisad`, `fel`. `pdfa` är en giltig nivå, `ingen` eller `ogiltig` |
 | `converter_rejections_total` | `reason` | Varför filer avvisas, se orsakerna ovan |
 | `converter_pdfa_violations_total` | `rule` | Vilka PDF/A-regler (veraPDF) som bryts |
-| `converter_conversion_duration_seconds` | `route`, `outcome` | Histogram |
-| `converter_busy_total` | | Anrop som fick `503` för att instansen var full |
+| `converter_conversion_duration_seconds` | `route`, `outcome` | Histogram med hinkar upp till 5 min (1, 5, 15, 30, 60, 120, 180, 240 s) |
+| `converter_busy_total` | `route` | Anrop som fick `503 BUSY` för att instansen eller LibreOffice var full |
+| `converter_inflight` | | Pågående konverteringar, inklusive sådana som fått `503 TIMEOUT` men ännu inte avbrutits |
+| `converter_concurrency_limit` | | Högsta antal samtidiga konverteringar |
+| `converter_queue_waiting` | | Anrop som väntar på en plats |
+| `converter_queue_wait_seconds` | `route` | Väntan på en plats (histogram), även för anrop som sedan fick `503` |
+| `converter_timeouts_total` | `stage` | Avbrutna av en tidsgräns: `anrop`, `html`, `efterbehandling`, `pdfa` |
+| `converter_libreoffice_up` | | `1` när LibreOffice-poolen är igång |
+| `converter_libreoffice_restarts_total` | `cause` | `fonter` (ändrade fonter), `krasch`, `tidsgrans`. Omstarter efter `max-tasks-per-process` räknas inte |
+| `converter_assets_reloads_total` | `result` | Omladdningar av fonter och alias: `ok`, `fel` |
+| `converter_assets_last_reload_timestamp_seconds` | | Senaste lyckade omladdning (eller start) |
+| `converter_font_aliases_missing` | | Fontalias vars målfont saknas |
+| `converter_cleanup_failures_total` | | Temporärkataloger för anrop som inte kunde tas bort |
+| `converter_build_info` | `version`, `java`, `libreoffice` | Alltid `1`. Versionerna loggas också vid start |
+| `converter_request_fields_total` | `route`, `field`, `handling` | Fält och `Gotenberg-*`-huvuden klienterna skickar: `stods`, `ignoreras`, `avvisas` |
+| `converter_request_files_total` | `route`, `extension` | Filtyper klienterna skickar |
+| `converter_unknown_routes_total` | `route`, `method` | Anrop till Gotenberg-routes som inte finns här (besvaras med `404`) |
+| `converter_engine_selected_total` | `engine`, `reason` | Vilken motor HTML-mallar renderas med, och varför |
 
-Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`, `ms`, `filer`)
-med spårnings-id. JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`.
+Varje konvertering ger en loggrad (`route`, `pdfa`, `utfall`, `orsak`, `status`, `ms`, `filer`,
+`ej_stod`, `motor`) med spårnings-id, också när anropet avvisas innan det når controllern (`503 BUSY`, för stora
+filer, inte multipart). `ej_stod` listar fält som ignorerades eller avvisades, med klientens egna namn.
+JSON-loggar för t.ex. Loki eller Elastic: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`
+(påslaget i manifesten). Fälten blir då egna fält i JSON-raden, och spårnings-id:t står i fältet `traceId`.
+
+**Filnamn.** Kundernas filnamn kan innehålla personuppgifter. `CONVERTER_LOGGING_FILE_NAMES` styr hur de
+skrivs i loggar och i administrationens lista över fel: `extension` (standard, t.ex. `*.docx (12 kB)`),
+`none` (bara storleken) eller `full` (hela namnet). Felmeddelandet till klienten innehåller fortfarande
+filnamnet.
+
+### Hälsa och prober
+
+| Sökväg | Port | Beror på LibreOffice | Används till |
+|---|---|---|---|
+| `/health` | 3000 | ja (`503` när den är nere) | Gotenberg-kompatibilitet för klienter |
+| `/actuator/health/liveness` | 9090 | nej | `livenessProbe` och `startupProbe` |
+| `/actuator/health/readiness` | 9090 | ja | `readinessProbe` |
+
+En LibreOffice som startas om eller inte kommer upp tar podden ur trafik men startar inte om den.
+När podden stängs av blir den inte ready, köande anrop får `503` direkt och pågående konverteringar får
+bli klara (`server.shutdown=graceful`, upp till 180 s). LibreOffice stoppas först därefter.
+
+### Vad klienterna skickar
+
+Inför och efter bytet från Gotenberg visar mätvärdena ovan vad klienterna faktiskt använder, utan att
+någon behöver läsa deras kod. Fältnamn och routes är en fast lista med Gotenberg 8:s namn. Okända
+namn räknas som `okant` respektive `okand`, så att klienter inte kan skapa nya serier i Prometheus.
+Klientens egna namn står på loggraden. Exempel i PromQL:
+
+```promql
+# Fält som klienterna skickar men som inte stöds, per route
+sum by (route, field, handling) (increase(converter_request_fields_total{handling!="stods"}[7d]))
+# Routes som saknas här
+sum by (route, method) (increase(converter_unknown_routes_total[7d]))
+```
 
 Fliken **Statistik** i administrationen visar samma sak för den instans du är inloggad mot, plus de
 100 senaste avvisade eller misslyckade anropen med filnamn, orsak och spårnings-id. Körningar i
@@ -202,26 +311,51 @@ Prometheus-måtten ovan.
 
 ## Skillnader mot Gotenberg
 
-- HTML renderas med openhtmltopdf, inte Chromium. Det gäller CSS 2.1 med delar av CSS3: **inte
-  flexbox, grid eller JavaScript**, och `opacity` och skuggor ignoreras. Det passar egna mallar
-  och är det som gör PDF/A-1a möjligt. `header.html`/`footer.html` fungerar som i Gotenberg, och
-  mallar kan också använda CSS direkt (`@page` + `position: running()`).
-- Mallar kan bara läsa filer som skickats med i anropet. Nätverksanrop och övriga filsystemet är spärrade.
+- HTML-mallar utan Chromium-behov renderas med openhtmltopdf (CSS 2.1 med delar av CSS3), som ger
+  taggad PDF/A-1a direkt. Där är standardformatet A4 och mallar kan använda `@page` +
+  `position: running()`. Mallar med flexbox, grid, JavaScript m.m. renderas med Chromium som i Gotenberg.
+- Mallar kan bara läsa filer som skickats med i anropet. Nätverksanrop och övriga filsystemet är
+  spärrade, så `cookies` och `extraHttpHeaders` har ingen verkan.
 - Routes för URL-konvertering, skärmdumpar och split finns inte.
-- Standardformat för HTML är A4 (Gotenberg: Letter) om varken mallen eller fälten anger något.
-- Bara PDF/A-1a och PDF/A-1b. Se tabellen ovan för vilka fält som stöds.
+- PDF/A-1a och a-nivåerna i del 2 och 3 utöver Gotenbergs b-nivåer. Bifogade filer i PDF/A-3
+  (`addOriginalDocumentAsStream`, e-faktura) och PDF/UA stöds inte ännu.
+- Fel returneras som `application/problem+json` med `reason`, inte som text. Klienter som läser
+  felets text får JSON. Tidsgränser ger `503`, som i Gotenberg.
+- `/version` returnerar tjänstens version, inte en Gotenberg-version. `/health` har samma form som i
+  Gotenberg, med versionerna som tillägg.
 
 ## Säkerhet och robusthet
 
 - LibreOffice körs med en profil som blockerar länkade resurser i dokument (bilder via http eller
   `file:`) och stänger av makron. Annars kan en kundfil få tjänsten att anropa interna adresser
-  eller bädda in lokala filer. `deploy/k8s/networkpolicy.yaml` stänger dessutom all utgående trafik.
+  eller bädda in lokala filer. `deploy/k8s/base/networkpolicy.yaml` stänger dessutom all utgående trafik och
+  släpper bara in klienter och Prometheus.
 - Bilder över 40 megapixel avvisas med en förklaring i stället för att packas upp.
 - Utplattningen av bilder har ett minnes- och tidstak (10 s per dokument). Över taket läggs
   bilderna mot vitt.
+- Bara fel i själva dokumentet ger `422 LIBREOFFICE_FAILED`. Fel som beror på last eller miljö ger `503`,
+  så att klienten kan försöka igen: `BUSY` (alla LibreOffice-processer upptagna, med `Retry-After`),
+  `LIBREOFFICE_TIMEOUT` (`CONVERTER_OFFICE_TASK_TIMEOUT` passerad, som i Gotenberg) och
+  `LIBREOFFICE_CRASHED`. Kraschar LibreOffice under ett jobb görs ett nytt försök med en ny process
+  innan anropet ger upp. I mätvärdena räknas `503` som utfallet `fel`, inte `avvisad`.
+- Chromium körs utan egen sandlåda (`CONVERTER_CHROMIUM_SANDBOX=false`), eftersom den kräver user
+  namespaces som containrar sällan har. Isoleringen sköts av containern (icke-root, seccomp, inget
+  nätverk) och av att varje begäran från mallen besvaras eller stoppas av tjänsten. Varje rendering
+  har en tidsgräns (`CONVERTER_CHROMIUM_JOB_TIMEOUT`), och webbläsaren startas om efter
+  `CONVERTER_CHROMIUM_RESTART_AFTER_JOBS` renderingar eller om den kraschar.
+- Samtidighetsgränsen tas innan uppladdningen läses. Anrop som köar har alltså inte skrivit något till
+  disk, och `CONVERTER_LIMITS_MAX_QUEUED` kan begränsa kön.
+- Tidsgränser för hela konverteringen (`CONVERTER_LIMITS_REQUEST_TIMEOUT`, 180 s utan kötiden),
+  HTML-renderingen, efterbehandlingen och PDF/A-normaliseringen med veraPDF. Överskrids en ger det
+  `503 TIMEOUT`. Konverteringen avbryts, men PDFBox och openhtmltopdf reagerar inte alltid på avbrott.
+  Den håller då kvar sin plats i samtidighetsgränsen tills den är klar.
 - Två uppladdade filer med samma namn avvisas (`400`) i stället för att den ena tyst skriver över den andra.
 - Dolda annoteringar (dolda fält, interna kommentarer) tas bort, eftersom PDF/A-1 annars kräver att de visas.
 - Administrationens inloggning kontrolleras på vilken funktion anropet hamnar i, inte på URL:en.
+- `tini` är PID 1 i imagen och tar hand om föräldralösa LibreOffice-processer, så att de inte blir
+  zombier. JVM:en avslutas vid `OutOfMemoryError` (`-XX:+ExitOnOutOfMemoryError`) i stället för att
+  fortsätta i ett osäkert läge, och Kubernetes startar om podden.
+- Basimagen är låst på digest, och Dependabot föreslår nya.
 
 ## Kända begränsningar
 
@@ -240,14 +374,50 @@ docker build -t file-converter .
 docker run -p 3000:3000 file-converter
 ```
 
-Lokalt utan Docker krävs Java 21, LibreOffice och fonterna ovan:
+Lokalt utan Docker krävs Java 21, LibreOffice (helst 26.2, som i imagen) och fonterna ovan:
 
 ```bash
 mvn spring-boot:run
 ```
 
-Kubernetes-manifest finns i `deploy/k8s/` (`kubectl apply -k deploy/k8s`). Skapa lösenordet för
-administrationen separat: `kubectl create secret generic file-converter-admin --from-literal=password=...`.
+### Kubernetes och Flux
+
+Manifesten ligger i `deploy/k8s/`: en gemensam `base/` och en overlay per miljö (`overlays/test`,
+`overlays/prod`). Overlayn sätter namespace, image och det som skiljer miljöerna åt. Registry,
+namespace och lagringsklass i overlays är exempel som byts mot era egna.
+
+```bash
+kubectl apply -k deploy/k8s/overlays/test
+```
+
+Med Flux pekar en `Kustomization` per miljö på sin overlay, se `deploy/flux/file-converter.yaml`.
+Produktion väntar där på att testmiljön är frisk (`dependsOn`).
+
+- **Image:** CI publicerar imagen när repo-variabeln `REGISTRY` är satt, med hemligheterna
+  `REGISTRY_USERNAME` och `REGISTRY_PASSWORD`. Taggar: `main`, `sha-<commit>` och för git-taggar som
+  `v1.2.3` även `1.2.3` och `1.2`. SBOM och provenance följer med, så att registryt kan skanna imagen.
+  Test följer `main`. Produktion låses till en release, och ett byte görs som en ändring av `newTag`
+  i `overlays/prod`.
+- **Hemligheter:** lösenordet till administrationen (`file-converter-admin`) och hämtningshemligheten
+  till registryt (`file-converter-registry`) checkas inte in i klartext. Skapa dem i klustret, eller
+  kryptera dem med SOPS och låt Flux avkoda dem:
+  `kubectl create secret generic file-converter-admin --from-literal=password=...`
+- **Vilka som når tjänsten:** NetworkPolicy släpper bara in namespaces med etiketten
+  `file-converter/klient=true` (port 3000) och `file-converter/metrics=true` (port 9090, Prometheus).
+  Märk klienternas namespaces innan bytet, annars får de inget svar:
+  `kubectl label namespace <namespace> file-converter/klient=true`
+- **Resurser:** pool, samtidighet, CPU och minne är satta tillsammans (2 LibreOffice-processer,
+  4 samtidiga anrop, 2 CPU, 3 GiB med request = limit). Ändra dem tillsammans enligt
+  [kapacitet](docs/kapacitet.md). Tjänsten loggar minnesbudgeten vid start och varnar om den inte ryms.
+- **Pod-säkerhet:** klarar Pod Security Standards `restricted`: icke-root (uid/gid 1001), seccomp
+  `RuntimeDefault`, inga capabilities och skrivskyddat rootfs. Skrivbara är `/tmp`, `/home/converter`
+  (emptyDir) och `/data` (den delade volymen, skrivbar via `fsGroup: 1001`; se `pvc.yaml` för
+  lagring som inte stöder fsGroup).
+- **Tillgänglighet:** PodDisruptionBudget (högst en podd i taget), spridning över noder och zoner, och
+  minst tre repliker i prod. HPA skalar på CPU, upp snabbt och ner långsamt.
+
+Drift: [runbook](docs/runbook.md), [kapacitet och lasttest](docs/kapacitet.md) och
+[byte från Gotenberg](docs/byte-fran-gotenberg.md).
 
 ### Konfiguration
 
@@ -258,12 +428,27 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 | `CONVERTER_OFFICE_POOL_SIZE` | `2` | LibreOffice-processer = samtidiga Office-konverteringar |
 | `CONVERTER_OFFICE_TASK_TIMEOUT` | `120s` | |
 | `CONVERTER_OFFICE_MAX_TASKS_PER_PROCESS` | `200` | Processen startas om efter så många jobb |
+| `CONVERTER_OFFICE_PROCESS_MEMORY` | `512MB` | Uppskattat minne per LibreOffice-process, för varningen om minnesbudgeten vid start |
 | `CONVERTER_PDFA_STRICT` | `false` | `false` = bästa försök (som Gotenberg), `true` = avvisa med 422 |
 | `CONVERTER_ADMIN_PASSWORD` | tomt | Aktiverar `/admin` |
 | `CONVERTER_ASSETS_DIR` | `/data` (imagen) | Uppladdade fonter och alias |
 | `CONVERTER_ASSETS_POLL_INTERVAL` | `30s` | Hur ofta andra poddars ändringar plockas upp |
-| `CONVERTER_LIMITS_MAX_CONCURRENT` | antal processorer | Samtidiga konverteringar per instans. Fler köar |
+| `CONVERTER_LIMITS_MAX_CONCURRENT` | antal processorer | Samtidiga konverteringar per instans. Fler köar. Sätt alltid i Kubernetes (manifesten: `4`), annars blir det nodens kärnor |
 | `CONVERTER_LIMITS_QUEUE_TIMEOUT` | `60s` | Därefter `503` med `Retry-After` |
+| `CONVERTER_CHROMIUM_ENABLED` | `true` | Av = mallar som kräver Chromium får `503 UNAVAILABLE` |
+| `CONVERTER_CHROMIUM_PATH` | tomt | `chrome-headless-shell` eller `chrome`. Tomt = `/opt/chrome-headless-shell` m.fl. kända platser |
+| `CONVERTER_CHROMIUM_MAX_CONCURRENT` | `2` | Samtidiga Chromium-sidor. Varje sida tar cirka 150–300 MB |
+| `CONVERTER_CHROMIUM_QUEUE_TIMEOUT` | `30s` | Därefter `503 BUSY` med `Retry-After` |
+| `CONVERTER_CHROMIUM_JOB_TIMEOUT` | `60s` | Hel rendering inklusive väntan. Därefter `503 CHROMIUM_TIMEOUT` |
+| `CONVERTER_CHROMIUM_MAX_WAIT_DELAY` | `30s` | Tak för `waitDelay` |
+| `CONVERTER_LIMITS_MAX_QUEUED` | `0` (obegränsat) | Fler köande anrop får `503 BUSY` direkt |
+| `CONVERTER_LIMITS_REQUEST_TIMEOUT` | `180s` | Hela konverteringen, utan kötiden. `0` = ingen gräns |
+| `CONVERTER_LIMITS_HTML_TIMEOUT` | `60s` | Renderingen av en HTML-mall |
+| `CONVERTER_LIMITS_POST_PROCESS_TIMEOUT` | `60s` | Metadata, formulär och sidurval per PDF |
+| `CONVERTER_LIMITS_PDFA_TIMEOUT` | `120s` | PDF/A-normalisering och veraPDF per PDF |
+| `CONVERTER_ASSETS_RELOAD_JITTER` | `60s` | Längsta slumpade väntan innan en annan podds ändring laddas in |
+| `CONVERTER_LOGGING_FILE_NAMES` | `extension` | `none`, `extension` eller `full`: filnamn i loggar och `/admin` |
+| `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` | `180s` | Hur länge pågående konverteringar får bli klara vid avstängning |
 | `SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE` | `100MB` | |
 | `SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE` | `100MB` | |
 
@@ -273,13 +458,29 @@ Allt i `application.yml` kan sättas med miljövariabler, t.ex.:
 mvn verify   # kräver LibreOffice och fonterna; integrationstesterna hoppas över utan LibreOffice
 ```
 
+Chromium-testerna körs när en Chromium finns (`CONVERTER_CHROMIUM_PATH`, `/usr/bin/google-chrome`
+m.fl., eller Playwrights `chrome-headless-shell`), annars hoppas de över.
+
+Imagen innehåller Chrome for Testing (`CHROME_VERSION` i `Dockerfile`), som uppdateras för hand.
+Chromium och dess bibliotek gör imagen cirka 450 MB större.
+
+I CI är `REQUIRE_LIBREOFFICE=true` satt. Då fallerar integrationstesterna i stället för att hoppas över
+om LibreOffice saknas. CI kör testerna på Java 25, samma version som imagen.
+
 Varje PDF/A-svar i integrationstesterna valideras om med veraPDF och kontrolleras för innehåll i
 strukturträdet. Testfilerna skapas med `scripts/make_fixtures.py` (kräver python-docx, Pillow och
 fonttools). Testfonterna är omdöpta delmängder av DejaVu Sans.
 
+Lasttest mot en körande instans, med bara curl och xargs (se [kapacitet](docs/kapacitet.md)):
+
+```bash
+ANTAL=900 TAKT=1 PARALLELLT=10 scripts/lasttest.sh http://localhost:3000
+```
+
 ## Licenser
 
 LibreOffice (MPL 2.0), PDFBox (Apache 2.0), veraPDF (MPL 2.0 / GPL 3, dubbellicens),
-openhtmltopdf (LGPL 2.1), jsoup (MIT), JODConverter (Apache 2.0), Spring Boot (Apache 2.0).
+openhtmltopdf (LGPL 2.1), jsoup (MIT), JODConverter (Apache 2.0), Spring Boot (Apache 2.0),
+Chrome for Testing (BSD m.fl., Chromium-licenserna).
 Ingen AGPL. Ghostscript används inte.
 CMYK-profilen `FOGRA39L_coated.icc` kommer från colord och är fri (CC0).

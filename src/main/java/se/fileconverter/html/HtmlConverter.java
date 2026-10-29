@@ -82,7 +82,7 @@ public class HtmlConverter {
             builder.useExternalResourceAccessControl((uri, type) -> isAllowed(uri, root),
                     ExternalResourceControlPriority.RUN_AFTER_RESOLVING_URI);
             pdfa.ifPresent(level -> {
-                builder.usePdfAConformance(level == PdfaLevel.PDFA_1A ? PdfAConformance.PDFA_1_A : PdfAConformance.PDFA_1_B);
+                builder.usePdfAConformance(PdfAConformance.valueOf("PDFA_" + level.part() + "_" + level.conformance()));
                 builder.useColorProfile(SRGB);
                 if (level.requiresTagging()) {
                     builder.usePdfUaAccessibility(true);

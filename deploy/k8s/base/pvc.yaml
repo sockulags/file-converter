@@ -1,0 +1,19 @@
+# Uppladdade fonter och alias, delade mellan alla poddar. Kräver en lagringsklass med
+# ReadWriteMany (t.ex. NFS, Azure Files, EFS). Kör ni bara en replik räcker ReadWriteOnce.
+#
+# Behörigheter: podden kör som uid/gid 1001 och sätter fsGroup 1001 (deployment.yaml). Alla
+# lagringsdrivrutiner tillämpar inte fsGroup (NFS och SMB/Azure Files gör det ofta inte). Ge då
+# uid/gid 1001 skrivrätt i lagringsklassen, t.ex. mountOptions uid=1001,gid=1001 för SMB eller
+# en export med rätt ägare för NFS. Utan skrivrätt startar tjänsten ändå, med imagens fonter och
+# en varning i loggen, men uppladdning i /admin fungerar inte.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: file-converter-assets
+spec:
+  accessModes:
+    - ReadWriteMany
+  # storageClassName: azurefile
+  resources:
+    requests:
+      storage: 1Gi

@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: LibreOffice och fonter (samma som i Docker-imagen)
@@ -16,23 +16,97 @@ jobs:
             libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
             fontconfig fonts-dejavu-core fonts-liberation fonts-liberation2 \
             fonts-crosextra-carlito fonts-crosextra-caladea
+      # Samma Java-version som imagen kör (JRE 25). Koden byggs fortfarande för Java 21 (pom.xml).
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
           cache: maven
+      # Integrationstesterna fallerar i stället för att hoppas över om LibreOffice saknas.
       - run: mvn -B verify
+        env:
+          REQUIRE_LIBREOFFICE: "true"
 
   docker:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: test
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t file-converter:ci .
+      # Samma begränsningar som i Kubernetes (PSS restricted): skrivskyddat rootfs med skrivbara
+      # /tmp, /home/converter och /data, inga capabilities.
       - name: Röktest av imagen
         run: |
-          docker run -d --name fc -p 3000:3000 file-converter:ci
+          docker run -d --name fc -p 3000:3000 --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:exec --tmpfs /home/converter:uid=1001,gid=1001 --tmpfs /data:uid=1001,gid=1001 \
+            file-converter:ci
           for i in $(seq 1 60); do curl -sf localhost:3000/health && break; sleep 2; done
           curl -sf -o out.pdf -F files=@src/test/resources/fixtures/beslut.docx -F pdfa=PDF/A-1a \
             localhost:3000/forms/libreoffice/convert -D headers.txt
           grep -i "x-pdfa-compliant: true" headers.txt
+          printf '<html><body><div style="display:flex">Flex</div><script>document.body.append("JS")</script></body></html>' > index.html
+          curl -sf -o mall.pdf -F files=@index.html -F pdfa=PDF/A-2b localhost:3000/forms/chromium/convert/html -D mall.txt
+          grep -i "x-converter-engine: chromium" mall.txt
+          grep -i "x-pdfa-compliant: true" mall.txt
+      - name: tini är PID 1 och inga zombieprocesser finns
+        run: |
+          docker exec fc ps -eo pid,ppid,stat,comm
+          test "$(docker exec fc ps -o comm= -p 1)" = tini
+          # Föräldralösa zombier (förälder PID 1) ska tini städa direkt.
+          ! docker exec fc ps -eo stat=,ppid= | awk '$1 ~ /^Z/ && $2 == 1' | grep -q .
+          # Chrome plockar upp sina egna renderingsprocesser en stund efter en rendering. Ge dem några sekunder.
+          for i in 1 2 3 4 5; do docker exec fc ps -eo stat= | grep -q '^Z' || break; sleep 1; done
+          ! docker exec fc ps -eo stat= | grep -q '^Z'
+      - name: Loggar från röktestet
+        if: failure()
+        run: docker logs fc
+
+  manifest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bygg overlays (kubectl finns på runnern)
+        run: |
+          for overlay in deploy/k8s/overlays/*/; do
+            echo "== $overlay"
+            kubectl kustomize "$overlay" > rendered.yaml
+            grep -E '^kind:' rendered.yaml | sort | uniq -c
+          done
+      - name: Dashboarden är giltig JSON
+        run: python3 -m json.tool deploy/k8s/components/monitoring/dashboard/file-converter.json > /dev/null
+
+  # Publicerar imagen till ert registry. Hoppas över tills repo-variabeln REGISTRY är satt
+  # (t.ex. registry.example.com/plattform), med hemligheterna REGISTRY_USERNAME och REGISTRY_PASSWORD.
+  # Taggar: main, sha-<commit> och, för git-taggar som v1.2.3, 1.2.3 och 1.2.
+  publish:
+    runs-on: ubuntu-24.04
+    needs: [test, docker, manifest]
+    if: vars.REGISTRY != '' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ vars.REGISTRY }}/file-converter
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      # SBOM och provenance följer med imagen, så att registryt kan skanna och visa innehållet.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max

@@ -25,8 +25,18 @@ public class ConversionException extends RuntimeException {
         PDFA_INVALID,
         UNREADABLE_PDF,
         LIBREOFFICE_FAILED,
+        LIBREOFFICE_TIMEOUT,
+        LIBREOFFICE_CRASHED,
+        BUSY,
+        TIMEOUT,
         MERGE_FAILED,
-        UNAVAILABLE
+        UNAVAILABLE,
+        CHROMIUM_TIMEOUT,
+        CHROMIUM_CRASHED,
+        CHROMIUM_FAILED,
+        CONSOLE_EXCEPTION,
+        RESOURCE_FAILED,
+        UNSUPPORTED_ROUTE
     }
 
     private final HttpStatus status;

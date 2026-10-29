@@ -1,17 +1,24 @@
 package se.fileconverter.api;
 
 import jakarta.servlet.http.HttpServletRequest;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.web.multipart.MultipartHttpServletRequest;
+import se.fileconverter.chromium.ChromiumConverter;
+import se.fileconverter.observability.ConversionRecord;
 import se.fileconverter.office.OfficeOptions;
+import se.fileconverter.pdfa.PdfaLevel;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -26,11 +33,13 @@ public final class GotenbergOptions {
 
     public static final String IGNORED_HEADER = "X-Converter-Ignored-Fields";
 
-    /** Chromium-fält som kräver JavaScript, nätverk eller webbläsarbeteende. HTML-renderaren har inget av det. */
-    private static final Set<String> CHROMIUM_NO_EFFECT = Set.of("waitDelay", "waitForExpression", "waitForSelector",
-            "emulatedMediaFeatures", "cookies", "userAgent", "extraHttpHeaders", "failOnHttpStatusCodes",
-            "failOnResourceHttpStatusCodes", "failOnResourceLoadingFailed", "failOnConsoleExceptions",
-            "skipNetworkIdleEvent", "omitBackground", "generateTaggedPdf", "ignoreResourceHttpStatusDomains");
+    /** Chromium-fält som bara fungerar när mallen renderas med Chromium, inte med openhtmltopdf. */
+    private static final Set<String> CHROMIUM_ONLY = Set.of("waitDelay", "waitForExpression", "waitForSelector",
+            "emulatedMediaFeatures", "userAgent", "failOnHttpStatusCodes", "failOnResourceHttpStatusCodes",
+            "failOnResourceLoadingFailed", "failOnConsoleExceptions", "skipNetworkIdleEvent", "omitBackground",
+            "generateTaggedPdf", "ignoreResourceHttpStatusDomains", "singlePage", "scale", "emulatedMediaType");
+    /** Fält som bara påverkar nätverksanrop. Mallar får inte nå nätverket, så de har ingen verkan. */
+    private static final Set<String> NO_NETWORK = Set.of("cookies", "extraHttpHeaders");
 
     /** Gotenbergs LibreOffice-fält som motsvarar en exportinställning i LibreOffice. */
     private static final Map<String, String> LIBREOFFICE_BOOLEANS = Map.ofEntries(
@@ -56,9 +65,32 @@ public final class GotenbergOptions {
             "quality", "maxImageResolution", "addOriginalDocumentAsStream");
     private static final Set<String> CHROMIUM = Set.of("paperWidth", "paperHeight", "marginTop", "marginBottom",
             "marginLeft", "marginRight", "landscape", "preferCssPageSize", "printBackground",
-            "generateDocumentOutline", "nativePageRanges", "singlePage", "scale", "emulatedMediaType");
+            "generateDocumentOutline", "nativePageRanges", "converterEngine");
     private static final Set<String> UNSUPPORTED_EVERYWHERE = Set.of("splitMode", "splitSpan", "splitUnify", "downloadFrom");
+    /** Övriga Gotenberg 8-fält som saknar motsvarighet här. De ignoreras men räknas med sitt namn. */
+    private static final Set<String> OTHER_GOTENBERG = Set.of("updateIndexes");
+    /**
+     * Fält som skulle ge ett annat resultat än klienten väntar sig om de ignorerades: lösenorden ger en
+     * krypterad fil i Gotenberg, här skulle filen bli okrypterad. Avvisas om de har ett värde.
+     */
+    private static final Set<String> REJECT_IF_PRESENT = Set.of("userPassword", "ownerPassword");
+    /** Vattenstämpel och stämpel (Gotenberg 8, även LibreOffice-fälten nativeWatermark*), oavsett exakt fältnamn. */
+    private static final List<String> REJECTED_PREFIXES = List.of("watermark", "stamp", "nativeWatermark", "nativeTiledWatermark");
+    /** Filfält med särskild betydelse i Gotenberg. Här skulle filerna annars konverteras som dokument. */
+    private static final Set<String> REJECTED_FILE_FIELDS = Set.of("embeds", "watermark", "stamp");
+    private static final String WEBHOOK_PREFIX = "Gotenberg-Webhook-";
+    /** Gotenbergs huvuden. Andra huvuden som börjar på {@code Gotenberg-} räknas som okända. */
+    private static final Set<String> GOTENBERG_HEADERS = Set.of("Gotenberg-Trace", "Gotenberg-Output-Filename",
+            "Gotenberg-Webhook-Url", "Gotenberg-Webhook-Error-Url", "Gotenberg-Webhook-Method",
+            "Gotenberg-Webhook-Error-Method", "Gotenberg-Webhook-Extra-Http-Headers", "Gotenberg-Webhook-Events-Url");
+    private static final Set<String> SUPPORTED_HEADERS = Set.of("Gotenberg-Trace", "Gotenberg-Output-Filename");
 
+    /** Namn som får bli etiketter i mätvärden. Allt annat räknas som {@link #UNKNOWN}, så att klienter inte kan skapa nya serier. */
+    private static final Set<String> KNOWN_NAMES = knownNames();
+    static final String UNKNOWN = "okant";
+
+    private static final Pattern LENGTH = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(in|cm|mm|pt|px|pc)?");
+    private static final Pattern GO_DURATION = Pattern.compile("(\\d+(?:\\.\\d+)?)(ms|s|m|h)");
     private static final Pattern PAGE_RANGES = Pattern.compile("\\s*\\d+(\\s*-\\s*\\d+)?(\\s*,\\s*\\d+(\\s*-\\s*\\d+)?)*\\s*");
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
@@ -66,6 +98,8 @@ public final class GotenbergOptions {
 
     private final HttpServletRequest request;
     private final List<String> ignored = new ArrayList<>();
+    /** Varje fält och Gotenberg-huvud i anropet och hur det hanterades: stods, ignoreras eller avvisas. */
+    private final Map<String, String> usage = new LinkedHashMap<>();
 
     private GotenbergOptions(HttpServletRequest request) {
         this.request = request;
@@ -74,46 +108,257 @@ public final class GotenbergOptions {
     /** Kontrollerar fält och huvuden för routen. Avvisar med 400 det som inte kan göras rätt. */
     public static GotenbergOptions parse(HttpServletRequest request, Route route) {
         GotenbergOptions options = new GotenbergOptions(request);
-        options.validate(route);
+        try {
+            options.validate(route);
+        } finally {
+            // Även avvisade anrop räknas, annars syns inte vilka fält som stoppade klienterna.
+            ConversionRecord.of(request).fields(options.fieldUsage(), options.notSupported());
+        }
         return options;
     }
 
     private void validate(Route route) {
-        if (request.getHeader("Gotenberg-Webhook-Url") != null) {
-            throw unsupported("Webhooks (asynkron konvertering) stöds inte. Anropa utan Gotenberg-Webhook-Url och vänta på svaret.");
-        }
-        if (bool("pdfua", false)) {
-            throw unsupported("PDF/UA stöds inte. Använd pdfa=PDF/A-1a, som också kräver taggad, tillgänglig PDF.");
+        for (String header : Collections.list(request.getHeaderNames())) {
+            if (header.regionMatches(true, 0, "Gotenberg-", 0, 10)) {
+                String name = GOTENBERG_HEADERS.stream().filter(header::equalsIgnoreCase).findFirst().orElse(header);
+                usage.put(name, SUPPORTED_HEADERS.contains(name) ? "stods" : "ignoreras");
+            }
         }
         for (String field : Collections.list(request.getParameterNames())) {
-            if (UNSUPPORTED_EVERYWHERE.contains(field)) {
-                throw unsupported("Fältet '" + field + "' stöds inte.");
-            }
             boolean known = COMMON.contains(field)
                     || (route == Route.LIBREOFFICE && (LIBREOFFICE.contains(field) || LIBREOFFICE_BOOLEANS.containsKey(field)))
-                    || (route == Route.CHROMIUM && CHROMIUM.contains(field))
+                    || (route == Route.CHROMIUM && (CHROMIUM.contains(field) || CHROMIUM_ONLY.contains(field)))
                     || (route == Route.PDFENGINES && field.equals("merge"));
-            if (!known) {
-                ignored.add(field);
+            usage.put(field, known ? "stods" : "ignoreras");
+        }
+        if (request instanceof MultipartHttpServletRequest multipart) {
+            for (String field : multipart.getMultiFileMap().keySet()) {
+                if (REJECTED_FILE_FIELDS.contains(field)) {
+                    throw unsupported(field, "Filfältet '" + field + "' stöds inte. "
+                            + (field.equals("embeds") ? "PDF/A-1 tillåter inga bifogade filer." : "Vattenstämplar och stämplar stöds inte."));
+                }
             }
         }
-        if (route == Route.CHROMIUM) {
+        List<String> webhooks = usage.keySet().stream().filter(name -> name.regionMatches(true, 0, WEBHOOK_PREFIX, 0, WEBHOOK_PREFIX.length())).toList();
+        if (!webhooks.isEmpty()) {
+            webhooks.forEach(name -> usage.put(name, "avvisas"));
+            throw unsupported(webhooks.getFirst(),
+                    "Webhooks (asynkron konvertering) stöds inte. Anropa utan Gotenberg-Webhook-* och vänta på svaret.");
+        }
+        for (String field : REJECT_IF_PRESENT) {
+            String value = request.getParameter(field);
+            if (value != null && !value.isBlank()) {
+                throw unsupported(field, "Kryptering (userPassword, ownerPassword) stöds inte. Filen skulle annars returneras okrypterad.");
+            }
+        }
+        for (String field : usage.keySet()) {
+            if (REJECTED_PREFIXES.stream().anyMatch(prefix -> field.regionMatches(true, 0, prefix, 0, prefix.length()))) {
+                throw unsupported(field, "Vattenstämplar och stämplar ('" + field + "') stöds inte.");
+            }
+        }
+        if (bool("pdfua", false)) {
+            throw unsupported("pdfua", "PDF/UA stöds inte. Använd pdfa=PDF/A-1a, som också kräver taggad, tillgänglig PDF.");
+        }
+        for (String field : usage.keySet()) {
+            if (UNSUPPORTED_EVERYWHERE.contains(field)) {
+                throw unsupported(field, "Fältet '" + field + "' stöds inte.");
+            }
+        }
+        usage.forEach((field, handling) -> {
+            if (handling.equals("ignoreras") && !field.regionMatches(true, 0, "Gotenberg-", 0, 10)) {
+                ignored.add(field);
+            }
+        });
+        if (route == Route.LIBREOFFICE && bool("addOriginalDocumentAsStream", false) && request.getParameter("pdfa") != null
+                && !request.getParameter("pdfa").isBlank()) {
+            throw unsupported("addOriginalDocumentAsStream",
+                    "addOriginalDocumentAsStream kan inte kombineras med PDF/A: PDF/A-1 och 2 tillåter inte bifogade filer av alla slag.");
+        }
+    }
+
+    /**
+     * När mallen renderas med openhtmltopdf (vald med converterEngine): avvisa det som inte kan göras
+     * rätt utan webbläsare, och lista övriga Chromium-fält som ignorerade.
+     */
+    public void forOpenHtmlToPdf() {
+        try {
             if (bool("singlePage", false)) {
-                throw unsupported("singlePage stöds inte. Ange sidstorlek med paperWidth/paperHeight eller @page.");
+                throw unsupported("singlePage", "singlePage kräver Chromium. Ange sidstorlek med paperWidth/paperHeight eller @page.");
             }
             String scale = request.getParameter("scale");
             if (scale != null && !scale.isBlank() && Double.parseDouble(scale.trim()) != 1.0) {
-                throw unsupported("scale stöds inte. Skala mallen med CSS (t.ex. font-size) i stället.");
+                throw unsupported("scale", "scale kräver Chromium. Skala mallen med CSS (t.ex. font-size) i stället.");
             }
             String media = request.getParameter("emulatedMediaType");
             if (media != null && media.trim().equalsIgnoreCase("screen")) {
-                throw unsupported("emulatedMediaType=screen stöds inte. Mallen renderas alltid som utskrift (@media print).");
+                throw unsupported("emulatedMediaType", "emulatedMediaType=screen kräver Chromium.");
             }
+            usage.forEach((field, handling) -> {
+                if (CHROMIUM_ONLY.contains(field)) {
+                    ignored.add(field);
+                }
+            });
+        } finally {
+            ConversionRecord.of(request).fields(fieldUsage(), notSupported());
         }
-        if (route == Route.LIBREOFFICE && bool("addOriginalDocumentAsStream", false) && request.getParameter("pdfa") != null
-                && !request.getParameter("pdfa").isBlank()) {
-            throw unsupported("addOriginalDocumentAsStream kan inte kombineras med PDF/A-1, som inte tillåter bifogade filer.");
+    }
+
+    /**
+     * Chromium-inställningar med Gotenberg 8:s standardvärden: Letter (8,5 × 11 tum), marginaler
+     * 0,39 tum, skala 1, utan bakgrunder.
+     *
+     * @param tagged taggad PDF, för PDF/A
+     */
+    public ChromiumConverter.Options chromium(boolean tagged) {
+        double scale = number("scale", 1.0);
+        if (scale < 0.1 || scale > 2.0) {
+            throw unsupported("scale", "scale ska vara mellan 0.1 och 2.");
         }
+        String media = request.getParameter("emulatedMediaType");
+        media = media == null || media.isBlank() ? "print" : media.trim().toLowerCase(Locale.ROOT);
+        if (!media.equals("print") && !media.equals("screen")) {
+            throw unsupported("emulatedMediaType", "emulatedMediaType ska vara print eller screen.");
+        }
+        String userAgent = request.getParameter("userAgent");
+        return new ChromiumConverter.Options(
+                inches("paperWidth", 8.5), inches("paperHeight", 11),
+                inches("marginTop", 0.39), inches("marginRight", 0.39), inches("marginBottom", 0.39), inches("marginLeft", 0.39),
+                bool("landscape", false), bool("preferCssPageSize", false), bool("printBackground", false),
+                bool("omitBackground", false), scale, pageRanges(), bool("generateDocumentOutline", false),
+                tagged || bool("generateTaggedPdf", false), bool("singlePage", false), duration("waitDelay"),
+                text("waitForExpression"), text("waitForSelector"), media, mediaFeatures(),
+                userAgent == null || userAgent.isBlank() ? null : userAgent,
+                bool("failOnConsoleExceptions", false), bool("failOnResourceLoadingFailed", false),
+                statusCodes("failOnResourceHttpStatusCodes"), bool("skipNetworkIdleEvent", false));
+    }
+
+    /** Mått i tum. Tal utan enhet är tum, som i Gotenberg. */
+    private double inches(String field, double fallback) {
+        String value = request.getParameter(field);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        Matcher matcher = LENGTH.matcher(value.trim().toLowerCase(Locale.ROOT));
+        if (!matcher.matches()) {
+            throw ConversionException.badRequest("Ogiltigt värde för '" + field + "': " + value);
+        }
+        double number = Double.parseDouble(matcher.group(1));
+        String unit = matcher.group(2) == null ? "in" : matcher.group(2);
+        return switch (unit) {
+            case "cm" -> number / 2.54;
+            case "mm" -> number / 25.4;
+            case "pt" -> number / 72;
+            case "px" -> number / 96;
+            case "pc" -> number / 6;
+            default -> number;
+        };
+    }
+
+    /** Gotenbergs tidsangivelser, t.ex. "500ms", "2s", "1m". */
+    private Duration duration(String field) {
+        String value = request.getParameter(field);
+        if (value == null || value.isBlank()) {
+            return Duration.ZERO;
+        }
+        Matcher matcher = GO_DURATION.matcher(value.trim());
+        if (!matcher.matches()) {
+            throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION,
+                    "Fältet '" + field + "' ska vara en tid som '500ms', '2s' eller '1m'.");
+        }
+        double number = Double.parseDouble(matcher.group(1));
+        long millis = (long) (number * switch (matcher.group(2)) {
+            case "ms" -> 1;
+            case "s" -> 1_000;
+            case "m" -> 60_000;
+            default -> 3_600_000;
+        });
+        return Duration.ofMillis(millis);
+    }
+
+    private double number(String field, double fallback) {
+        String value = request.getParameter(field);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Double.parseDouble(value.trim());
+        } catch (NumberFormatException e) {
+            throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION, "Fältet '" + field + "' ska vara ett tal.");
+        }
+    }
+
+    private String text(String field) {
+        String value = request.getParameter(field);
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    /** Gotenbergs emulatedMediaFeatures: [{"name": "prefers-color-scheme", "value": "dark"}]. */
+    private List<Map<String, String>> mediaFeatures() {
+        String json = request.getParameter("emulatedMediaFeatures");
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<Map<String, String>> features = new ArrayList<>();
+            for (Object item : JSON.readValue(json, List.class)) {
+                if (item instanceof Map<?, ?> map && map.get("name") instanceof String name) {
+                    features.add(Map.of("name", name, "value", String.valueOf(map.get("value") == null ? "" : map.get("value"))));
+                }
+            }
+            return features;
+        } catch (JacksonException e) {
+            throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION,
+                    "emulatedMediaFeatures ska vara en JSON-lista med name och value.");
+        }
+    }
+
+    /** Gotenbergs statuskodslistor, t.ex. [404, 499]: 499 betyder alla 400-koder. */
+    private List<Integer> statusCodes(String field) {
+        String json = request.getParameter(field);
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<Integer> codes = new ArrayList<>();
+            for (Object item : JSON.readValue(json, List.class)) {
+                codes.add(((Number) item).intValue());
+            }
+            return codes;
+        } catch (JacksonException | ClassCastException e) {
+            throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION, field + " ska vara en JSON-lista med statuskoder.");
+        }
+    }
+
+    /**
+     * Fält och Gotenberg-huvuden i anropet och hur de hanterades, med namn som är säkra som etiketter
+     * i mätvärden: okända namn blir {@value #UNKNOWN}.
+     */
+    public Map<String, String> fieldUsage() {
+        Map<String, String> result = new LinkedHashMap<>();
+        usage.forEach((name, handling) -> result.merge(KNOWN_NAMES.contains(name) ? name : UNKNOWN, handling,
+                (a, b) -> a.equals("avvisas") || b.equals("avvisas") ? "avvisas" : a));
+        return result;
+    }
+
+    /**
+     * Fält och huvuden som inte stöds, med klientens egna namn ("waitDelay=ignoreras"), för loggraden.
+     * Kontrolltecken byts ut så att ett fältnamn inte kan skapa egna loggrader.
+     */
+    public List<String> notSupported() {
+        return usage.entrySet().stream().filter(entry -> !entry.getValue().equals("stods"))
+                .map(entry -> {
+                    String name = entry.getKey().replaceAll("\\p{Cntrl}", "?");
+                    return (name.length() > 60 ? name.substring(0, 60) : name) + "=" + entry.getValue();
+                })
+                .sorted().limit(30).toList();
+    }
+
+    private static Set<String> knownNames() {
+        Set<String> names = new java.util.HashSet<>();
+        List.of(COMMON, LIBREOFFICE, LIBREOFFICE_BOOLEANS.keySet(), CHROMIUM, CHROMIUM_ONLY, NO_NETWORK, UNSUPPORTED_EVERYWHERE,
+                OTHER_GOTENBERG, REJECT_IF_PRESENT, REJECTED_FILE_FIELDS, GOTENBERG_HEADERS).forEach(names::addAll);
+        names.add("merge");
+        return Set.copyOf(names);
     }
 
     /** Fält som togs emot men inte påverkar resultatet. */
@@ -162,7 +407,7 @@ public final class GotenbergOptions {
     }
 
     /** LibreOffice-inställningar från Gotenbergs fält. */
-    public OfficeOptions office(boolean pdfA) {
+    public OfficeOptions office(PdfaLevel pdfa) {
         Map<String, Object> filterData = new LinkedHashMap<>();
         LIBREOFFICE_BOOLEANS.forEach((field, key) -> {
             String value = request.getParameter(field);
@@ -186,7 +431,7 @@ public final class GotenbergOptions {
             filterData.put("PageRange", ranges);
         }
         String password = request.getParameter("password");
-        return new OfficeOptions(pdfA, filterData, bool("landscape", false),
+        return new OfficeOptions(pdfa, filterData, bool("landscape", false),
                 password == null || password.isEmpty() ? null : password);
     }
 
@@ -212,7 +457,8 @@ public final class GotenbergOptions {
         }
     }
 
-    private static ConversionException unsupported(String message) {
+    private ConversionException unsupported(String field, String message) {
+        usage.put(field, "avvisas");
         return ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION, message);
     }
 }

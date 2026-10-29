@@ -1,0 +1,33 @@
+# In: bara klienter och Prometheus. Namespaces märks med etiketter, så att en ny klient läggs till
+# utan att policyn ändras:
+#   kubectl label namespace <klientens namespace> file-converter/klient=true
+#   kubectl label namespace <Prometheus namespace> file-converter/metrics=true
+# Probes från kubelet och kubectl port-forward (t.ex. till /admin) påverkas normalt inte.
+#
+# Ut: ingenting. Tjänsten behöver ingen utgående trafik, och spärren är ett andra skydd om ett
+# dokument ändå försöker hämta något via nätverket (länkade bilder, externa data).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: file-converter
+spec:
+  podSelector:
+    matchLabels:
+      app: file-converter
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              file-converter/klient: "true"
+      ports:
+        - port: 3000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              file-converter/metrics: "true"
+      ports:
+        - port: 9090
+  egress: []

@@ -22,10 +22,11 @@ import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
+import se.fileconverter.chromium.ChromiumConverter;
+import se.fileconverter.html.EngineSelector;
 import se.fileconverter.html.HtmlConverter;
 import se.fileconverter.office.OfficeConverter;
 import se.fileconverter.office.OfficeOptions;
@@ -49,16 +50,23 @@ public class ConversionController {
 
     private static final Pattern LENGTH = Pattern.compile("\\d+(\\.\\d+)?(in|cm|mm|pt|px|pc)?");
     private static final Comparator<Path> ALPHANUMERIC = Comparator.comparing(p -> p.getFileName().toString());
+    private static final Map<String, String> ROUTES = Map.of("/forms/libreoffice/convert", "libreoffice",
+            "/forms/chromium/convert/html", "chromium-html", "/forms/pdfengines/convert", "pdfengines-convert",
+            "/forms/pdfengines/merge", "pdfengines-merge");
 
     private final OfficeConverter office;
     private final HtmlConverter html;
     private final PdfMerger merger;
     private final PdfaService pdfa;
     private final PdfPostProcessor postProcessor;
+    private final ChromiumConverter chromium;
+    private final Timeouts timeouts;
 
     public ConversionController(OfficeConverter office, HtmlConverter html, PdfMerger merger, PdfaService pdfa,
-            PdfPostProcessor postProcessor) {
+            PdfPostProcessor postProcessor, ChromiumConverter chromium, Timeouts timeouts) {
         this.postProcessor = postProcessor;
+        this.chromium = chromium;
+        this.timeouts = timeouts;
         this.office = office;
         this.html = html;
         this.merger = merger;
@@ -68,15 +76,6 @@ public class ConversionController {
     record Output(String name, byte[] pdf, PdfaValidator.Report report) {
     }
 
-    /** 503 tills LibreOffice-poolen är igång, så att Kubernetes inte skickar trafik för tidigt. */
-    @GetMapping("/health")
-    public ResponseEntity<Map<String, Object>> health() {
-        String libreoffice = !office.isEnabled() ? "disabled" : office.isRunning() ? "up" : "down";
-        boolean up = !"down".equals(libreoffice);
-        return ResponseEntity.status(up ? 200 : 503)
-                .body(Map.of("status", up ? "up" : "down", "details", Map.of("libreoffice", libreoffice)));
-    }
-
     @ConcurrencyLimit.Limited
     @PostMapping("/forms/libreoffice/convert")
     public ResponseEntity<byte[]> libreoffice(MultipartHttpServletRequest request) {
@@ -84,7 +83,7 @@ public class ConversionController {
         GotenbergOptions options = GotenbergOptions.parse(request, GotenbergOptions.Route.LIBREOFFICE);
         Optional<PdfaLevel> level = PdfaLevel.parse(request.getParameter("pdfa"));
         Boolean strict = bool(request, "pdfaStrict");
-        OfficeOptions officeOptions = options.office(level.isPresent());
+        OfficeOptions officeOptions = options.office(level.orElse(null));
         try (Workspace ws = Workspace.from(request)) {
             List<Path> files = ws.files().stream().sorted(ALPHANUMERIC).toList();
             List<Output> outputs = new ArrayList<>();
@@ -106,19 +105,31 @@ public class ConversionController {
         GotenbergOptions options = GotenbergOptions.parse(request, GotenbergOptions.Route.CHROMIUM);
         Optional<PdfaLevel> level = PdfaLevel.parse(request.getParameter("pdfa"));
         Boolean strict = bool(request, "pdfaStrict");
-        String ranges = options.pageRanges();
-        if (ranges != null && level.isPresent() && level.get().requiresTagging()) {
-            throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION,
-                    "nativePageRanges kan inte kombineras med PDF/A-1a för mallar: taggstrukturen skulle peka på borttagna sidor.");
-        }
         try (Workspace ws = Workspace.from(request)) {
+            EngineSelector.Selection engine = EngineSelector.select(ws.dir(), request::getParameter);
+            ConversionRecord.of(request).engine(engine.engine().label(), engine.reason());
+            Map<String, String> engineHeaders = Map.of("X-Converter-Engine", engine.engine().label(),
+                    "X-Converter-Engine-Reason", engine.reason());
+            if (engine.engine() == EngineSelector.Engine.CHROMIUM) {
+                // Chromium taggar när PDF/A begärs; en b-nivå blir då a om resultatet klarar det.
+                byte[] pdf = chromium.toPdf(ws.dir(), options.chromium(level.isPresent()));
+                return respond(request, options, finish(List.of(new Output("index", pdf, null)), options, level, strict, true),
+                        engineHeaders);
+            }
+            options.forOpenHtmlToPdf();
+            String ranges = options.pageRanges();
+            if (ranges != null && level.isPresent() && level.get().requiresTagging()) {
+                throw ConversionException.badRequest(ConversionException.Reason.UNSUPPORTED_OPTION,
+                        "nativePageRanges kan inte kombineras med " + level.get().label() + " för mallar: taggstrukturen skulle peka på borttagna sidor.");
+            }
             HtmlConverter.Options htmlOptions = new HtmlConverter.Options(pageCss(request, options.bool("preferCssPageSize", false)),
                     options.bool("printBackground", false), options.bool("generateDocumentOutline", false));
-            byte[] pdf = html.toPdf(ws.dir(), htmlOptions, level);
+            byte[] pdf = timeouts.supply(Timeouts.Stage.HTML, () -> html.toPdf(ws.dir(), htmlOptions, level));
             if (ranges != null) {
-                pdf = postProcessor.selectPages(pdf, ranges);
+                byte[] rendered = pdf;
+                pdf = timeouts.supply(Timeouts.Stage.POST_PROCESS, () -> postProcessor.selectPages(rendered, ranges));
             }
-            return respond(request, options, finish(List.of(new Output("index", pdf, null)), options, level, strict));
+            return respond(request, options, finish(List.of(new Output("index", pdf, null)), options, level, strict), engineHeaders);
         }
     }
 
@@ -165,39 +176,68 @@ public class ConversionController {
         }
     }
 
-    /** Metadata och plattning av formulär, sedan PDF/A om det begärts. */
     private List<Output> finish(List<Output> outputs, GotenbergOptions options, Optional<PdfaLevel> level, Boolean strict) {
+        return finish(outputs, options, level, strict, false);
+    }
+
+    /**
+     * Metadata och plattning av formulär, sedan PDF/A om det begärts.
+     *
+     * @param tryTagged för b- och u-nivåer i del 2 och 3: märk filen med a-nivån om den är taggad och klarar
+     *                  valideringen. Annars blir den den begärda nivån, som vanligt.
+     */
+    private List<Output> finish(List<Output> outputs, GotenbergOptions options, Optional<PdfaLevel> level, Boolean strict,
+            boolean tryTagged) {
         Map<String, Object> metadata = options.metadata();
         boolean flatten = options.flatten();
         return outputs.stream().map(output -> {
-            byte[] pdf = postProcessor.apply(output.pdf(), metadata, flatten);
+            byte[] pdf = timeouts.supply(Timeouts.Stage.POST_PROCESS, () -> postProcessor.apply(output.pdf(), metadata, flatten));
             if (level.isEmpty()) {
                 return new Output(output.name(), pdf, null);
             }
-            PdfaService.Result result = pdfa.convert(pdf, level.get(), strict);
+            if (tryTagged && level.get().part() >= 2 && !level.get().requiresTagging()) {
+                PdfaService.Result tagged = timeouts.supply(Timeouts.Stage.PDFA,
+                        () -> pdfa.convert(pdf, PdfaLevel.of(level.get().part(), "A"), false));
+                if (tagged.report().compliant()) {
+                    return new Output(output.name(), tagged.pdf(), tagged.report());
+                }
+            }
+            PdfaService.Result result = timeouts.supply(Timeouts.Stage.PDFA, () -> pdfa.convert(pdf, level.get(), strict));
             return new Output(output.name(), result.pdf(), result.report());
         }).toList();
     }
 
+    /** Routens namn i loggar och mätvärden, eller null för sökvägar som inte är konverteringar. */
+    static String routeName(String path) {
+        return ROUTES.get(path);
+    }
+
     /** Registrerar anropet för loggning och mätvärden (se {@link ConversionRecord}). */
     private static void track(MultipartHttpServletRequest request, String route) {
-        List<String> files = request.getMultiFileMap().values().stream().flatMap(List::stream)
-                .map(file -> file.getOriginalFilename() + " (" + file.getSize() / 1024 + " kB)").toList();
-        ConversionRecord.of(request).start(route, request.getParameter("pdfa"), files);
+        ConversionRecord.of(request).start(route, request.getParameter("pdfa"),
+                request.getMultiFileMap().values().stream().flatMap(List::stream).toList());
     }
 
     private static ResponseEntity<byte[]> respond(MultipartHttpServletRequest request, GotenbergOptions options, List<Output> outputs) {
+        return respond(request, options, outputs, Map.of());
+    }
+
+    private static ResponseEntity<byte[]> respond(MultipartHttpServletRequest request, GotenbergOptions options, List<Output> outputs,
+            Map<String, String> extraHeaders) {
         List<PdfaValidator.Report> reports = outputs.stream().map(Output::report).filter(Objects::nonNull).toList();
         ConversionRecord.of(request).succeeded(
                 reports.isEmpty() ? null : reports.stream().allMatch(PdfaValidator.Report::compliant),
                 reports.stream().flatMap(report -> report.violations().stream()).distinct().toList());
         String requestedName = request.getHeader("Gotenberg-Output-Filename");
         HttpHeaders headers = new HttpHeaders();
+        extraHeaders.forEach(headers::set);
         if (!options.ignoredFields().isEmpty()) {
             headers.set(GotenbergOptions.IGNORED_HEADER, String.join(",", options.ignoredFields()));
         }
         outputs.stream().map(Output::report).filter(Objects::nonNull).findFirst().ifPresent(report -> {
-            headers.set("X-Pdfa-Level", report.level().label());
+            // Flera filer (zip) kan ha fått olika nivåer, t.ex. när en saknade taggar.
+            headers.set("X-Pdfa-Level", reports.stream().map(r -> r.level().label()).distinct()
+                    .collect(java.util.stream.Collectors.joining(",")));
             headers.set("X-Pdfa-Compliant", String.valueOf(outputs.stream().allMatch(o -> o.report().compliant())));
             String problems = reports.stream().flatMap(r -> r.violations().stream())
                     .map(ConversionController::problemCode).distinct().collect(java.util.stream.Collectors.joining(","));

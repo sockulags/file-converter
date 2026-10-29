@@ -1,5 +1,6 @@
 package se.fileconverter.api;
 
+import io.micrometer.core.instrument.Metrics;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -8,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
 
@@ -50,8 +52,13 @@ public record Workspace(Path dir, List<Path> files) implements AutoCloseable {
     public void close() {
         try (Stream<Path> paths = Files.walk(dir)) {
             paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
-        } catch (IOException ignored) {
-            // Temporärkatalogen städas av operativsystemet om det här misslyckas.
+        } catch (IOException | UncheckedIOException e) {
+            // Kontrolleras nedan.
+        }
+        if (Files.exists(dir)) {
+            // Blir kvar på disken (emptyDir i Kubernetes). Syns i loggen och i converter_cleanup_failures_total.
+            Metrics.counter("converter.cleanup.failures").increment();
+            LoggerFactory.getLogger(Workspace.class).warn("Kunde inte ta bort {}", dir);
         }
     }
 }

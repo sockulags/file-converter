@@ -1,0 +1,36 @@
+# Skalar på CPU. En Office-konvertering håller en kärna, så CPU följer lasten hyggligt, men inte kön:
+# anrop som väntar på en ledig LibreOffice-process syns inte. Larmet FileConverterUpptagen och
+# HPA-larmet i components/monitoring säger när det inte räcker. Se docs/kapacitet.md.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: file-converter
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: file-converter
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Upp snabbt: en ny podd tar 30–60 s att starta (LibreOffice), och toppar kommer plötsligt.
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    # Ner långsamt: en podd som tas bort avbryter pågående konverteringar, och lasten kommer i vågor.
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

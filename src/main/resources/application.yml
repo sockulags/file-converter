@@ -8,11 +8,16 @@ spring:
   threads:
     virtual:
       enabled: true
+  # Pågående konverteringar får bli klara vid avstängning. Räcker för converter.limits.request-timeout.
+  lifecycle:
+    timeout-per-shutdown-phase: 180s
 
 server:
   port: 3000  # samma port som Gotenberg
+  shutdown: graceful
 
 # Mätvärden på en egen port, skild från konverterings-API:t: /actuator/prometheus och /actuator/health.
+# Kubernetes-prober: /actuator/health/liveness (bara JVM:en) och /actuator/health/readiness (även LibreOffice).
 management:
   server:
     port: 9090
@@ -20,6 +25,14 @@ management:
     web:
       exposure:
         include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        readiness:
+          include: readinessState,libreoffice
   metrics:
     tags:
       application: file-converter
@@ -38,6 +51,7 @@ converter:
     task-timeout: 120s
     queue-timeout: 30s
     max-tasks-per-process: 200  # starta om processen regelbundet för att undvika minnesläckor
+    process-memory: 512MB       # uppskattning per process; används bara för varningen om minnesbudgeten vid start
   fonts:
     dirs:
       - /usr/share/fonts/truetype
@@ -55,6 +69,15 @@ converter:
       "[Courier]": Liberation Mono
       "[Calibri]": Carlito
       "[Cambria]": Caladea
+  chromium:
+    enabled: true
+    path: ""               # tomt = leta efter chrome-headless-shell/chrome på kända platser
+    sandbox: false         # kräver user namespaces; i en container isolerar containern i stället
+    max-concurrent: 2      # samtidiga Chromium-sidor; varje sida tar ca 150–300 MB
+    queue-timeout: 30s
+    job-timeout: 60s       # hel rendering inklusive waitDelay och waitForExpression
+    max-wait-delay: 30s    # tak för waitDelay
+    restart-after-jobs: 200
   pdfa:
     # false = bästa försök (som Gotenberg): filen returneras även om allt inte gick att rätta,
     # och X-Pdfa-Compliant/X-Pdfa-Problems säger vad. true = avvisa med 422.
@@ -62,8 +85,17 @@ converter:
   assets:
     dir: ./data            # i Docker: /data, i Kubernetes en delad volym (ReadWriteMany)
     poll-interval: 30s
+    reload-jitter: 60s     # poddarna laddar om (och startar om LibreOffice) vid olika tider inom detta fönster
   limits:
     max-concurrent: 0      # 0 = antal processorer
     queue-timeout: 60s
+    max-queued: 0          # 0 = obegränsad kö
+    # Tidsgränser, 0 = ingen. Överskrids de blir svaret 503 TIMEOUT.
+    request-timeout: 180s  # hela konverteringen, utan tiden i kö
+    html-timeout: 60s
+    post-process-timeout: 60s
+    pdfa-timeout: 120s     # normalisering och veraPDF, per fil
+  logging:
+    file-names: extension  # none, extension eller full: hur kundernas filnamn skrivs i loggar och i /admin
   admin:
     password: ""           # sätt CONVERTER_ADMIN_PASSWORD för att aktivera /admin

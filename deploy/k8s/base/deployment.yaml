@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-converter
+  labels:
+    app: file-converter
+spec:
+  replicas: 2
+  # Ingen podd tas ner förrän den nya är ready, så att kapaciteten inte sjunker under en uppdatering.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: file-converter
+  template:
+    metadata:
+      labels:
+        app: file-converter
+      # Mätvärdena skrapas via PodMonitor i components/monitoring. Utan Prometheus Operator:
+      # components/prometheus-annotations i stället (inte båda, då skrapas allt två gånger).
+    spec:
+      # preStop (10 s) + pågående konverteringar får bli klara (180 s, spring.lifecycle) + LibreOffice stoppas.
+      terminationGracePeriodSeconds: 200
+      # Hämtningshemlighet för ett privat registry. Finns den inte i namespacet hämtas imagen utan inloggning.
+      imagePullSecrets:
+        - name: file-converter-registry
+      # Klarar Pod Security Standards "restricted".
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        # Gör den delade volymen skrivbar för uid 1001. OnRootMismatch: ägarbyte bara när rotkatalogen
+        # har fel grupp, inte vid varje start (går långsamt på stora NFS-volymer).
+        fsGroup: 1001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # Sprid poddarna över noder (krav) och zoner (om möjligt), så att en nod eller zon inte tar ner allt.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: file-converter
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: file-converter
+      containers:
+        - name: file-converter
+          # Registry och tagg sätts i overlays (images i kustomization.yaml).
+          image: file-converter
+          ports:
+            - containerPort: 3000
+              name: http
+            - containerPort: 9090
+              name: metrics
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # Pool, samtidighet, CPU och minne hänger ihop. Ändra dem tillsammans, se docs/kapacitet.md.
+          env:
+            # En LibreOffice-process per samtidig Office-konvertering.
+            - name: CONVERTER_OFFICE_POOL_SIZE
+              value: "2"
+            # Samtidiga konverteringar per pod, alla routes. Utan värdet blir det antalet processorer.
+            # Poolen + 2, så att HTML och PDF kan köra medan Office-anropen fyller poolen.
+            - name: CONVERTER_LIMITS_MAX_CONCURRENT
+              value: "4"
+            # Ersätter imagens JAVA_TOOL_OPTIONS. ActiveProcessorCount = CPU-gränsen nedan, så att JVM:en
+            # dimensionerar trådpooler och GC efter podden och inte efter noden.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=40 -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError"
+            # JSON-loggar (ECS) för Loki eller Elastic.
+            - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
+              value: ecs
+            # Aktiverar /admin. Utan hemligheten är administrationen avstängd.
+            - name: CONVERTER_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: file-converter-admin
+                  key: password
+                  optional: true
+          # Request = limit: QoS Guaranteed, så att podden vräks sist vid minnesbrist på noden.
+          # Minnet: heap 40 % (1,6 GiB) + 2 × LibreOffice (cirka 0,5 GiB) + 2 × Chromium-sida
+          # (cirka 0,3 GiB) + JVM i övrigt. Loggas vid start ("Minnesbudget").
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          # Proberna går mot actuatorn på 9090. Liveness beror bara på JVM:en, så att en LibreOffice som
+          # startas om tar podden ur trafik (readiness) men inte startar om den. /health på 3000 är kvar
+          # för klienterna, med Gotenbergs form.
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 9090 }
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 9090 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 9090 }
+            periodSeconds: 20
+            failureThreshold: 6
+          # Ge Service och ingress tid att sluta skicka trafik innan avstängningen börjar.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
+          # Rootfs är skrivskyddat. Skrivbart: /tmp (uppladdningar, arbetskataloger, LibreOffice-profiler),
+          # /home/converter (LibreOffice och dconf skriver i HOME) och /data (fonter och alias).
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/converter
+            - name: assets
+              mountPath: /data
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 4Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: assets
+          persistentVolumeClaim:
+            claimName: file-converter-assets
