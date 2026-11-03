@@ -8,7 +8,7 @@ RUN mvn -q -B -DskipTests package
 
 # Chrome for Testing, eftersom Ubuntus chromium-paket är en snap som inte går att köra i en container.
 # Versionen uppdateras för hand: https://googlechromelabs.github.io/chrome-for-testing/
-FROM eclipse-temurin:25-jre-resolute@sha256:acd83cdf6c9b5bfcd7c4e9d3e1969bacaacdcfa034c074500ab28610fb840f81 AS chrome
+FROM eclipse-temurin:25-jre-resolute@sha256:b6e00330337143a2c1a20f1c1c693d4b6ce9a3c30ade8b9d03fc68cc9e3871e7 AS chrome
 ARG CHROME_VERSION=153.0.8010.12
 ADD https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-headless-shell-linux64.zip /tmp/chrome.zip
 RUN apt-get update \
@@ -17,7 +17,7 @@ RUN apt-get update \
  && mv /opt/chrome-headless-shell-linux64 /opt/chrome-headless-shell
 
 # Låst på digest så att bygget är reproducerbart. Dependabot (docker) föreslår nya digester.
-FROM eclipse-temurin:25-jre-resolute@sha256:acd83cdf6c9b5bfcd7c4e9d3e1969bacaacdcfa034c074500ab28610fb840f81
+FROM eclipse-temurin:25-jre-resolute@sha256:b6e00330337143a2c1a20f1c1c693d4b6ce9a3c30ade8b9d03fc68cc9e3871e7
 
 # --no-install-recommends håller borta extra fontpaket (bl.a. OpenType/CFF) som LibreOffice
 # annars kan välja som ersättning. Fontlistan nedan är den enda som finns i imagen.
